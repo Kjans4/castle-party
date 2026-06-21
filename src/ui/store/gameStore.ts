@@ -31,9 +31,9 @@ interface GameStore {
   runTimer: number;            // seconds remaining, counts down from RUN_DURATION_SECONDS
   isRunActive: boolean;
 
-  // HUD state — static in Phase 1, driven by systems in Phase 2+
+  // HUD state — live in Phase 2, driven by GameScene + DarknessSystem
   beaconStates: BeaconState[];
-  darknessLevel: number;       // 1–7, static 1 in Phase 1
+  darknessLevel: number;       // 1–7, live starting Phase 2
 
   // Mana and Stamina pool percentages for HUD bars
   manaPercent: number;         // 0–100
@@ -46,6 +46,7 @@ interface GameStore {
   setRunActive: (active: boolean) => void;
   resetRun: () => void;
   setBeaconState: (index: number, state: Partial<BeaconState>) => void;
+  setDarknessLevel: (level: number) => void;
   setManaPercent: (value: number) => void;
   setStaminaPercent: (value: number) => void;
 }
@@ -107,6 +108,8 @@ export const useGameStore = create<GameStore>((set) => ({
       updated[index] = { ...updated[index], ...partial };
       return { beaconStates: updated };
     }),
+
+  setDarknessLevel: (level) => set({ darknessLevel: level }),
 
   setManaPercent: (value) => set({ manaPercent: Math.min(100, Math.max(0, value)) }),
   setStaminaPercent: (value) => set({ staminaPercent: Math.min(100, Math.max(0, value)) }),

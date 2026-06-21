@@ -1,15 +1,23 @@
 // [File: src/game/scenes/GameScene.ts]
 // [BLOCK: Game Scene]
-// Main gameplay scene. Owns world, camera, heroes, and input.
+// Main gameplay scene. Owns world, camera, heroes, beacons, and input.
 // Writes to Zustand store each tick — React HUD reads from it.
 
 import Phaser from 'phaser';
 import {
   WORLD_W, WORLD_H, TILE_SIZE, CAMERA_LERP,
+  HERO_SPAWN_X, HERO_SPAWN_Y,
+  BEACON_LIGHT_RADIUS, BEACON_HEAL_RATE,
+  DARKNESS_OVERLAY_DEPTH,
 } from '@/game/config/constants';
 import { HERO_ROSTER } from '@/game/config/heroes';
+import { BEACON_ROSTER } from '@/game/config/beacons';
 import { registerAnimations } from '@/game/animations/registry';
 import { Hero } from '@/game/entities/Hero';
+import { Beacon } from '@/game/entities/Beacon';
+import { generateBeaconPositions } from '@/game/utils/BeaconPlacement';
+import { distance } from '@/game/utils/MathUtils';
+import { DarknessSystem } from '@/game/systems/DarknessSystem';
 import { useGameStore } from '@/ui/store/gameStore';
 
 // [BLOCK: Game Scene Class]
@@ -17,6 +25,13 @@ export class GameScene extends Phaser.Scene {
   // [BLOCK: Heroes]
   private heroes: Hero[] = [];
   private leaderIndex: number = 0;
+
+  // [BLOCK: Beacons]
+  private beacons: Beacon[] = [];
+
+  // [BLOCK: Darkness]
+  private darknessSystem: DarknessSystem = new DarknessSystem();
+  private darknessOverlay!: Phaser.GameObjects.Rectangle;
 
   // [BLOCK: Input]
   private wasd!: {
@@ -69,6 +84,12 @@ export class GameScene extends Phaser.Scene {
     // Spawn heroes
     this.spawnHeroes();
 
+    // Spawn beacons (Phase 2)
+    this.spawnBeacons();
+
+    // Darkness overlay (Phase 2)
+    this.createDarknessOverlay();
+
     // Start timer
     useGameStore.getState().setRunActive(true);
   }
@@ -76,15 +97,13 @@ export class GameScene extends Phaser.Scene {
   // [BLOCK: Spawn Heroes]
   // Heroes spawn at the left edge of the world, vertically centered.
   private spawnHeroes(): void {
-    const startX = 300;
-    const startY = WORLD_H / 2;
     const spacing = 60;
 
     HERO_ROSTER.forEach((config, i) => {
       const hero = new Hero(
         this,
-        startX,
-        startY + (i - 1) * spacing,
+        HERO_SPAWN_X,
+        HERO_SPAWN_Y + (i - 1) * spacing,
         config
       );
       this.heroes.push(hero);
@@ -92,6 +111,29 @@ export class GameScene extends Phaser.Scene {
 
     // Set initial leader
     this.setLeader(0);
+  }
+
+  // [BLOCK: Spawn Beacons]
+  // Generates randomized positions via rejection sampling, then instantiates
+  // a Beacon entity per config in BEACON_ROSTER (Crown is always index 0).
+  private spawnBeacons(): void {
+    const positions = generateBeaconPositions({ x: HERO_SPAWN_X, y: HERO_SPAWN_Y });
+
+    BEACON_ROSTER.forEach((config, i) => {
+      const pos = positions[i];
+      const beacon = new Beacon(this, pos.x, pos.y, config);
+      this.beacons.push(beacon);
+    });
+
+    this.syncBeaconStateToStore();
+  }
+
+  // [BLOCK: Create Darkness Overlay]
+  // Full-screen dark rectangle above the world, below heroes/beacons (depth 15).
+  // Starts fully transparent — DarknessSystem lerps its alpha live each frame.
+  private createDarknessOverlay(): void {
+    this.darknessOverlay = this.add.rectangle(WORLD_W / 2, WORLD_H / 2, WORLD_W, WORLD_H, 0x000000, 0);
+    this.darknessOverlay.setDepth(DARKNESS_OVERLAY_DEPTH);
   }
 
   // [BLOCK: Set Leader]
@@ -170,8 +212,58 @@ export class GameScene extends Phaser.Scene {
       hero.update(deltaSeconds);
     });
 
+    // Beacon proximity healing + per-beacon ticking (Phase 2)
+    this.updateBeaconProximityHealing(deltaSeconds);
+    this.beacons.forEach((beacon) => beacon.update(deltaSeconds));
+    this.syncBeaconStateToStore();
+
+    // Darkness — live level + overlay alpha (Phase 2)
+    this.updateDarkness(deltaSeconds);
+
     // Sync resource bars to Zustand
     this.syncResourceBars();
+  }
+
+  // [BLOCK: Beacon Proximity Healing]
+  // For each beacon, check all heroes — first hero within BEACON_LIGHT_RADIUS
+  // triggers the heal. Multiple heroes in range do not stack (break on first hit).
+  // Skips beacons already at full meter.
+  private updateBeaconProximityHealing(deltaSeconds: number): void {
+    const healAmount = BEACON_HEAL_RATE * deltaSeconds;
+
+    for (const beacon of this.beacons) {
+      if (beacon.fireMeter >= 100) continue;
+
+      for (const hero of this.heroes) {
+        if (distance(hero.x, hero.y, beacon.x, beacon.y) <= BEACON_LIGHT_RADIUS) {
+          beacon.heal(healAmount);
+          break; // one hero is enough, no stacking
+        }
+      }
+    }
+  }
+
+  // [BLOCK: Sync Beacon State To Store]
+  // Pushes isLit/fireMeter for every beacon to Zustand so the HUD can react.
+  private syncBeaconStateToStore(): void {
+    const store = useGameStore.getState();
+    this.beacons.forEach((beacon, i) => {
+      store.setBeaconState(i, {
+        isLit: beacon.isLit,
+        fireMeter: beacon.fireMeter,
+      });
+    });
+  }
+
+  // [BLOCK: Update Darkness]
+  // Counts currently lit beacons, advances DarknessSystem's lerp, applies the
+  // resulting alpha to the overlay rectangle, and syncs the level to the store.
+  private updateDarkness(deltaSeconds: number): void {
+    const litCount = this.beacons.filter((b) => b.isLit).length;
+    const { level, alpha } = this.darknessSystem.update(litCount, deltaSeconds);
+
+    this.darknessOverlay.setFillStyle(0x000000, alpha);
+    useGameStore.getState().setDarknessLevel(level);
   }
 
   // [BLOCK: Sync Resource Bars]
