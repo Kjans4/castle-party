@@ -4,14 +4,26 @@
 // [BLOCK: Timer HUD]
 // Displays the run countdown in MM:SS format.
 // Reads from Zustand store — updates every render tick.
-// Turns orange in the final minute as a visual warning.
+// Color reacts to live darkness level (Phase 2): white -> orange (Level 4+)
+// -> red (Level 6+), per castle-party-phase2-plan.md Darkness Level table.
 
 import { useGameStore, formatTimer } from '@/ui/store/gameStore';
 
+function colorForDarknessLevel(level: number): { color: string; glow: string } {
+  if (level >= 6) {
+    return { color: '#ff4444', glow: '0 0 20px rgba(255,68,68,0.6)' };
+  }
+  if (level >= 4) {
+    return { color: '#ff8c28', glow: '0 0 20px rgba(255,140,40,0.6)' };
+  }
+  return { color: '#ffffff', glow: 'none' };
+}
+
 export default function Timer() {
-  const runTimer = useGameStore((s) => s.runTimer);
-  const display  = formatTimer(runTimer);
-  const isFinal  = runTimer <= 60; // final minute warning
+  const runTimer      = useGameStore((s) => s.runTimer);
+  const darknessLevel = useGameStore((s) => s.darknessLevel);
+  const display        = formatTimer(runTimer);
+  const { color, glow } = colorForDarknessLevel(darknessLevel);
 
   return (
     <div style={{
@@ -34,8 +46,8 @@ export default function Timer() {
         fontWeight: 900,
         letterSpacing: '0.1em',
         fontVariantNumeric: 'tabular-nums',
-        color: isFinal ? '#ff8c28' : '#ffffff',
-        textShadow: isFinal ? '0 0 20px rgba(255,140,40,0.6)' : 'none',
+        color,
+        textShadow: glow,
         margin: 0,
         transition: 'color 0.5s, text-shadow 0.5s',
       }}>

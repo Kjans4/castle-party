@@ -3,7 +3,8 @@
 // [File: src/ui/menus/PostRun.tsx]
 // [BLOCK: Post Run Screen]
 // Pure inline styles — no Tailwind dependency.
-// Hardcoded Victory in Phase 1. Timer from Zustand store.
+// Reads runResult from Zustand store (Phase 2) instead of hardcoding Victory.
+// Falls back to 'victory' display if runResult is null (e.g. direct nav during dev).
 
 import { useRouter } from 'next/navigation';
 import { CSSProperties } from 'react';
@@ -12,8 +13,11 @@ import { RUN_DURATION_SECONDS } from '@/game/config/constants';
 
 export default function PostRun() {
   const router = useRouter();
-  const runTimer = useGameStore((s) => s.runTimer);
-  const resetRun = useGameStore((s) => s.resetRun);
+  const runTimer   = useGameStore((s) => s.runTimer);
+  const runResult  = useGameStore((s) => s.runResult);
+  const resetRun   = useGameStore((s) => s.resetRun);
+
+  const isVictory = runResult !== 'defeat'; // null or 'victory' both render as Victory
 
   const timeSurvivedSeconds = RUN_DURATION_SECONDS - runTimer;
   const timeSurvivedDisplay = formatTimer(timeSurvivedSeconds);
@@ -43,6 +47,9 @@ export default function PostRun() {
     color: '#ffffff',
   };
 
+  const resultGlowColor = isVictory ? 'rgba(255,220,80,0.06)' : 'rgba(255,68,68,0.06)';
+  const resultTextShadow = isVictory ? '0 0 40px rgba(255,220,80,0.35)' : '0 0 40px rgba(255,68,68,0.35)';
+
   return (
     <main style={root}>
 
@@ -64,7 +71,7 @@ export default function PostRun() {
         transform: 'translate(-50%, -50%)',
         width: '700px',
         height: '700px',
-        background: 'radial-gradient(ellipse at center, rgba(255,220,80,0.06) 0%, transparent 70%)',
+        background: `radial-gradient(ellipse at center, ${resultGlowColor} 0%, transparent 70%)`,
         pointerEvents: 'none',
       }} />
 
@@ -92,9 +99,9 @@ export default function PostRun() {
           textTransform: 'uppercase',
           letterSpacing: '0.12em',
           margin: 0,
-          textShadow: '0 0 40px rgba(255,220,80,0.35)',
+          textShadow: resultTextShadow,
         }}>
-          Victory
+          {isVictory ? 'Victory' : 'Defeat'}
         </h1>
       </div>
 

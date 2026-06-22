@@ -2,8 +2,9 @@
 // [BLOCK: Store Overview]
 // Zustand store — the shared state bridge between Phaser and React.
 //
-// Phaser writes to this store each game tick (timer, hero switches, beacon states).
-// React reads from this store to render the HUD overlay.
+// Phaser writes to this store each game tick (timer, hero switches, beacon states,
+// run result). React reads from this store to render the HUD overlay and to
+// navigate to /results when a run ends.
 //
 // They never talk to each other directly — only through this store.
 // See phase-1-plan.md "How Phaser + Next.js Connect" for architecture diagram.
@@ -21,6 +22,11 @@ export interface BeaconState {
   fireMeter: number;   // 0–100 percent of max fire meter HP
 }
 
+// [BLOCK: Run Result Type]
+// null while the run is in progress. Set once by GameScene right before the
+// run ends — PostRun.tsx reads this instead of hardcoding "Victory".
+export type RunResult = 'victory' | 'defeat' | null;
+
 // [BLOCK: Store Shape]
 interface GameStore {
   // Squad
@@ -30,6 +36,7 @@ interface GameStore {
   // Run state
   runTimer: number;            // seconds remaining, counts down from RUN_DURATION_SECONDS
   isRunActive: boolean;
+  runResult: RunResult;        // set once when the run ends, read by /results
 
   // HUD state — live in Phase 2, driven by GameScene + DarknessSystem
   beaconStates: BeaconState[];
@@ -49,6 +56,7 @@ interface GameStore {
   setDarknessLevel: (level: number) => void;
   setManaPercent: (value: number) => void;
   setStaminaPercent: (value: number) => void;
+  endRun: (result: 'victory' | 'defeat') => void;
 }
 
 // [BLOCK: Default Beacon States]
@@ -72,6 +80,7 @@ export const useGameStore = create<GameStore>((set) => ({
   // Run state
   runTimer: RUN_DURATION_SECONDS,
   isRunActive: false,
+  runResult: null,
 
   // HUD state
   beaconStates: DEFAULT_BEACON_STATES.slice(0, BEACON_COUNT),
@@ -95,6 +104,7 @@ export const useGameStore = create<GameStore>((set) => ({
     set({
       runTimer: RUN_DURATION_SECONDS,
       isRunActive: false,
+      runResult: null,
       activeLeaderIndex: 0,
       darknessLevel: 1,
       manaPercent: 100,
@@ -113,6 +123,12 @@ export const useGameStore = create<GameStore>((set) => ({
 
   setManaPercent: (value) => set({ manaPercent: Math.min(100, Math.max(0, value)) }),
   setStaminaPercent: (value) => set({ staminaPercent: Math.min(100, Math.max(0, value)) }),
+
+  // [BLOCK: End Run]
+  // Called once by GameScene when the run ends — sets the result flag and
+  // marks the run inactive. game/page.tsx watches runResult and navigates
+  // to /results when it changes from null.
+  endRun: (result) => set({ isRunActive: false, runResult: result }),
 }));
 
 // [BLOCK: Timer Formatter]

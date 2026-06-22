@@ -6,12 +6,17 @@
 // Phaser renders at z-index 0 (fixed, full viewport).
 // HUD overlays at z-index 10 (pointer-events-none except portraits).
 // PhaserGame loaded via dynamic import with ssr:false — Phaser needs browser globals.
+// Watches gameStore.runResult (Phase 2) and navigates to /results once GameScene
+// sets it — this is the only bridge from Phaser's win/loss logic to Next.js routing.
 
 import dynamic from 'next/dynamic';
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import Timer from '@/ui/hud/Timer';
 import HeroPortraits from '@/ui/hud/HeroPortraits';
 import BeaconStatus from '@/ui/hud/BeaconStatus';
 import ResourceBars from '@/ui/hud/ResourceBars';
+import { useGameStore } from '@/ui/store/gameStore';
 
 // [BLOCK: Dynamic Import — SSR Disabled]
 const PhaserGame = dynamic(() => import('../game/PhaserGame'), {
@@ -40,6 +45,18 @@ const PhaserGame = dynamic(() => import('../game/PhaserGame'), {
 
 // [BLOCK: Game Page Component]
 export default function GamePage() {
+  const router = useRouter();
+  const runResult = useGameStore((s) => s.runResult);
+
+  // [BLOCK: Watch Run Result — Navigate To Results]
+  // GameScene sets runResult once (via endRun) when the run ends.
+  // This effect is the only place that reacts to it and routes accordingly.
+  useEffect(() => {
+    if (runResult !== null) {
+      router.push('/results');
+    }
+  }, [runResult, router]);
+
   return (
     <div style={{
       position: 'relative',
@@ -110,7 +127,7 @@ export default function GamePage() {
           color: 'rgba(255,255,255,0.1)',
           margin: 0,
         }}>
-          Phase 1 — Prototype
+          Phase 2 — Beacons &amp; Darkness
         </p>
 
       </div>

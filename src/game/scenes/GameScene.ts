@@ -33,6 +33,13 @@ export class GameScene extends Phaser.Scene {
   private darknessSystem: DarknessSystem = new DarknessSystem();
   private darknessOverlay!: Phaser.GameObjects.Rectangle;
 
+  // [BLOCK: Run Ending — Win/Loss]
+  // DEFEAT_FADE_SECONDS matches the plan's "fades to full black over 1.5s".
+  private static readonly DEFEAT_FADE_SECONDS = 1.5;
+  private runEnded: boolean = false;
+  private defeatFadeElapsed: number = 0;
+  private isDefeatFading: boolean = false;
+
   // [BLOCK: Input]
   private wasd!: {
     up: Phaser.Input.Keyboard.Key;
@@ -185,6 +192,12 @@ export class GameScene extends Phaser.Scene {
   update(_time: number, delta: number): void {
     const deltaSeconds = delta / 1000;
 
+    // Once the run has ended, only the defeat fade (if any) continues ticking.
+    if (this.runEnded) {
+      if (this.isDefeatFading) this.tickDefeatFade(deltaSeconds);
+      return;
+    }
+
     // Tick run timer
     useGameStore.getState().tickTimer(deltaSeconds);
 
@@ -218,10 +231,56 @@ export class GameScene extends Phaser.Scene {
     this.syncBeaconStateToStore();
 
     // Darkness — live level + overlay alpha (Phase 2)
-    this.updateDarkness(deltaSeconds);
+    const litCount = this.beacons.filter((b) => b.isLit).length;
+    this.updateDarkness(litCount, deltaSeconds);
+
+    // Win/Loss — loss takes priority if both trigger the same frame (Phase 2)
+    this.checkWinLossConditions(litCount);
 
     // Sync resource bars to Zustand
     this.syncResourceBars();
+  }
+
+  // [BLOCK: Check Win/Loss Conditions]
+  // Loss: all 7 beacons extinguished -> defeat fade -> PostRun(victory: false)
+  // Win: timer reaches 0:00 AND at least 1 beacon still lit -> PostRun(victory: true)
+  // If both are true on the same frame, loss wins (checked first).
+  private checkWinLossConditions(litCount: number): void {
+    if (this.runEnded) return;
+
+    if (litCount === 0) {
+      this.startDefeatFade();
+      return;
+    }
+
+    const runTimer = useGameStore.getState().runTimer;
+    if (runTimer <= 0) {
+      this.runEnded = true;
+      useGameStore.getState().endRun('victory');
+    }
+  }
+
+  // [BLOCK: Start Defeat Fade]
+  // Begins the 1.5s fade-to-black sequence. The darkness overlay is driven
+  // directly here instead of through DarknessSystem for this final stretch.
+  private startDefeatFade(): void {
+    if (this.runEnded) return;
+    this.runEnded = true;
+    this.isDefeatFading = true;
+    this.defeatFadeElapsed = 0;
+  }
+
+  // [BLOCK: Tick Defeat Fade]
+  private tickDefeatFade(deltaSeconds: number): void {
+    this.defeatFadeElapsed += deltaSeconds;
+    const t = Math.min(1, this.defeatFadeElapsed / GameScene.DEFEAT_FADE_SECONDS);
+
+    this.darknessOverlay.setFillStyle(0x000000, t);
+
+    if (t >= 1) {
+      this.isDefeatFading = false;
+      useGameStore.getState().endRun('defeat');
+    }
   }
 
   // [BLOCK: Beacon Proximity Healing]
@@ -256,10 +315,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Update Darkness]
-  // Counts currently lit beacons, advances DarknessSystem's lerp, applies the
-  // resulting alpha to the overlay rectangle, and syncs the level to the store.
-  private updateDarkness(deltaSeconds: number): void {
-    const litCount = this.beacons.filter((b) => b.isLit).length;
+  // Advances DarknessSystem's lerp using the already-computed lit count,
+  // applies the resulting alpha to the overlay rectangle, and syncs the
+  // level to the store.
+  private updateDarkness(litCount: number, deltaSeconds: number): void {
     const { level, alpha } = this.darknessSystem.update(litCount, deltaSeconds);
 
     this.darknessOverlay.setFillStyle(0x000000, alpha);
