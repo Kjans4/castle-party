@@ -61,8 +61,42 @@ export const DARKNESS_OVERLAY_DEPTH = 15;     // above world, below heroes and b
 
 // [BLOCK: Enemy Spawn]
 export const SPAWN_INTERVAL_MS = 4000;  // base spawn batch every 4s
+export const SPAWN_VARIANCE_MS = 1000;  // ±1s randomized per batch
 export const BATCH_INTERVAL_MS = 120000; // new batch type every 2 minutes
 export const PRE_BATCH_PAUSE_MS = 20000; // 20s pause before new batch
+
+// [BLOCK: Spawn Boundary (Phase 3)]
+// Enemies spawn at the outer edge of the current illuminated zone. At full
+// light this sits near the map edge; as Darkness Level rises the boundary
+// contracts toward the beacon cluster.
+export const SPAWN_BOUNDARY_RADIUS_FULL_LIGHT = 25 * TILE_SIZE; // ~25m at Darkness Level 1
+export const SPAWN_BOUNDARY_SHRINK_PER_LEVEL = 2.5 * TILE_SIZE; // contracts ~2.5m per Darkness Level
+export const SPAWN_BOUNDARY_MIN_RADIUS = 8 * TILE_SIZE;          // never spawns closer than this
+
+// [BLOCK: Batch Size Scaling — by Darkness Level]
+// Index 0 unused (Darkness Level is 1-indexed); values are [min, max] enemies per batch.
+export const BATCH_SIZE_BY_DARKNESS_LEVEL: Record<number, [number, number]> = {
+  1: [1, 2],
+  2: [2, 3],
+  3: [2, 3],
+  4: [3, 4],
+  5: [3, 4],
+  6: [4, 6],
+  7: [4, 6],
+};
+
+// [BLOCK: Enemy Combat (Phase 3)]
+export const ENEMY_BODY_SIZE = 24;                // px — placeholder square hitbox
+export const ENEMY_AGGRO_RANGE = 5 * TILE_SIZE;   // 320px (5 meters) — beyond this, enemy returns to beacon
+export const ENEMY_ATTACK_RANGE = 3 * TILE_SIZE;  // 192px (3 meters) — within this, enemy attacks beacon
+export const ENEMY_SPAWN_FADE_SECONDS = 0.3;      // fade-in duration when crossing into light
+
+// [BLOCK: Hero Attack (Phase 3)]
+export const HERO_MELEE_RANGE = 1.5 * TILE_SIZE;     // 96px (1.5 meters) — Fencer cone reach
+export const HERO_MELEE_ANGLE = 90;                  // degrees — Fencer cone width
+export const HERO_PROJECTILE_SPEED = 600;            // px/sec — Sorceress projectile
+export const PRIESTESS_PROJECTILE_SPEED = 500;       // px/sec — Priestess projectile
+export const COMPANION_ATTACK_RANGE = 400;           // px — range at which companions start attacking
 
 // [BLOCK: Respawn Timers]
 export const RESPAWN_1_DEAD = 45;   // seconds

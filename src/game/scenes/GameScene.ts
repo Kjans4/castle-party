@@ -15,9 +15,12 @@ import { BEACON_ROSTER } from '@/game/config/beacons';
 import { registerAnimations } from '@/game/animations/registry';
 import { Hero } from '@/game/entities/Hero';
 import { Beacon } from '@/game/entities/Beacon';
+import { Enemy } from '@/game/entities/Enemy';
 import { generateBeaconPositions } from '@/game/utils/BeaconPlacement';
 import { distance } from '@/game/utils/MathUtils';
 import { DarknessSystem } from '@/game/systems/DarknessSystem';
+import { SpawnSystem } from '@/game/systems/SpawnSystem';
+import { ENEMY_ROSTER } from '@/game/config/enemies';
 import { useGameStore } from '@/ui/store/gameStore';
 
 // [BLOCK: Game Scene Class]
@@ -28,6 +31,11 @@ export class GameScene extends Phaser.Scene {
 
   // [BLOCK: Beacons]
   private beacons: Beacon[] = [];
+
+  // [BLOCK: Enemies]
+  private enemies: Enemy[] = [];
+  private spawnSystem: SpawnSystem = new SpawnSystem();
+  private enemyConfigById = new Map(ENEMY_ROSTER.map((cfg) => [cfg.id, cfg]));
 
   // [BLOCK: Darkness]
   private darknessSystem: DarknessSystem = new DarknessSystem();
@@ -232,7 +240,11 @@ export class GameScene extends Phaser.Scene {
 
     // Darkness — live level + overlay alpha (Phase 2)
     const litCount = this.beacons.filter((b) => b.isLit).length;
-    this.updateDarkness(litCount, deltaSeconds);
+    const darknessLevel = this.updateDarkness(litCount, deltaSeconds);
+
+    // Enemy spawning + movement AI (Phase 3 — Chunk A: no combat yet)
+    this.updateEnemySpawning(deltaSeconds, darknessLevel);
+    this.enemies.forEach((enemy) => enemy.update(deltaSeconds, this.beacons));
 
     // Win/Loss — loss takes priority if both trigger the same frame (Phase 2)
     this.checkWinLossConditions(litCount);
@@ -314,15 +326,33 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  // [BLOCK: Update Enemy Spawning]
+  // Pulls spawn requests from SpawnSystem (empty most frames), instantiates
+  // an Enemy per request, and adds it to the tracked array.
+  private updateEnemySpawning(deltaSeconds: number, darknessLevel: number): void {
+    const clusterCenter = { x: WORLD_W / 2, y: WORLD_H / 2 };
+    const requests = this.spawnSystem.update(deltaSeconds, darknessLevel, clusterCenter);
+
+    for (const request of requests) {
+      const config = this.enemyConfigById.get(request.enemyId);
+      if (!config) continue; // unknown id — skip rather than crash
+
+      const enemy = new Enemy(this, request.x, request.y, config);
+      this.enemies.push(enemy);
+    }
+  }
+
   // [BLOCK: Update Darkness]
   // Advances DarknessSystem's lerp using the already-computed lit count,
-  // applies the resulting alpha to the overlay rectangle, and syncs the
-  // level to the store.
-  private updateDarkness(litCount: number, deltaSeconds: number): void {
+  // applies the resulting alpha to the overlay rectangle, syncs the level to
+  // the store, and returns the level so the spawn loop can scale off it too.
+  private updateDarkness(litCount: number, deltaSeconds: number): number {
     const { level, alpha } = this.darknessSystem.update(litCount, deltaSeconds);
 
     this.darknessOverlay.setFillStyle(0x000000, alpha);
     useGameStore.getState().setDarknessLevel(level);
+
+    return level;
   }
 
   // [BLOCK: Sync Resource Bars]
