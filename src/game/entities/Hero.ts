@@ -1,14 +1,16 @@
 // [File: src/game/entities/Hero.ts]
 // [BLOCK: Hero Entity]
-// Full implementation for Phase 1.
-// Handles WASD movement, mouse aim, companion follow behavior.
-// Hero switching is managed by GameScene — Hero only knows its own state.
+// Movement/aim/companion-follow from Phase 1, basic attack system added Phase 3.
+// Hero decides melee-vs-projectile by its own config.id and handles its own
+// attack cooldown — GameScene decides WHO fires and AT WHAT ANGLE each frame
+// (leader on click, companions mirror that angle unless posted).
 
 import Phaser from 'phaser';
 import { Unit } from './Unit';
 import { Stat } from '@/game/primitives/Stat';
 import { ResourcePool } from '@/game/primitives/ResourcePool';
-import type { HeroConfig } from '@/game/config/heroes';
+import { Projectile } from './Projectile';
+import type { HeroConfig, AttackElement } from '@/game/config/heroes';
 import {
   TILE_SIZE,
   HERO_BODY_W,
@@ -17,7 +19,40 @@ import {
   HERO_ACCELERATION,
   HERO_DRAG,
   COMPANION_FOLLOW_DISTANCE,
+  HERO_MELEE_RANGE,
+  HERO_MELEE_ANGLE,
+  HERO_PROJECTILE_SPEED,
+  PRIESTESS_PROJECTILE_SPEED,
+  PROJECTILE_RADIUS_SORCERESS,
+  PROJECTILE_RADIUS_PRIESTESS,
 } from '@/game/config/constants';
+
+// [BLOCK: Attack Result Types]
+// Hero.tryAttack returns one of these (or null if on cooldown). GameScene
+// resolves melee results into an instant cone hit-test + visual flash, and
+// pushes projectile results into its tracked projectile array.
+export interface MeleeAttackResult {
+  kind: 'melee';
+  angle: number;
+  range: number;
+  coneAngleDeg: number;
+  damage: number;
+  source: Hero;
+}
+
+export interface ProjectileAttackResult {
+  kind: 'projectile';
+  projectile: Projectile;
+}
+
+export type AttackResult = MeleeAttackResult | ProjectileAttackResult;
+
+// [BLOCK: Sorceress Random Element]
+// "Color cycles randomly" per shot, per castle-party-phase3-plan.md Section 6.
+const SORCERESS_ELEMENTS: AttackElement[] = ['fire', 'ice', 'electric'];
+function rollSorceressElement(): AttackElement {
+  return SORCERESS_ELEMENTS[Math.floor(Math.random() * SORCERESS_ELEMENTS.length)];
+}
 
 // [BLOCK: Hero Class]
 export class Hero extends Unit {
@@ -30,6 +65,9 @@ export class Hero extends Unit {
   // [BLOCK: Resource Pools]
   manaPool?: ResourcePool;
   staminaPool?: ResourcePool;
+
+  // [BLOCK: Attack Cooldown — Phase 3]
+  private attackCooldownRemaining: number = 0;
 
   // [BLOCK: Visuals]
   private bodyRect: Phaser.GameObjects.Rectangle;
@@ -187,9 +225,74 @@ export class Hero extends Unit {
     this.aimIndicator.setRotation(angle + Math.PI / 2);
   }
 
+  // [BLOCK: Is Melee Attacker]
+  // Only Fencer is melee in Phase 3 — discriminator kept simple by id rather
+  // than adding an attackType field to HeroConfig for just 3 heroes.
+  get isMeleeAttacker(): boolean {
+    return this.config.id === 'fencer';
+  }
+
+  // [BLOCK: Can Attack]
+  get canAttack(): boolean {
+    return this.attackCooldownRemaining <= 0;
+  }
+
+  // [BLOCK: Tick Attack Cooldown]
+  private tickAttackCooldown(deltaSeconds: number): void {
+    if (this.attackCooldownRemaining > 0) {
+      this.attackCooldownRemaining = Math.max(0, this.attackCooldownRemaining - deltaSeconds);
+    }
+  }
+
+  // [BLOCK: Reset Attack Cooldown]
+  // attackSpeedStat is hits/sec for every current hero — cooldown is its reciprocal.
+  private resetAttackCooldown(): void {
+    const hitsPerSecond = this.attackSpeedStat.getValue();
+    this.attackCooldownRemaining = hitsPerSecond > 0 ? 1 / hitsPerSecond : 0;
+  }
+
+  // [BLOCK: Try Attack]
+  // Returns null if on cooldown. Otherwise resets cooldown and returns either
+  // a melee descriptor (Fencer) or a launched Projectile (Sorceress/Priestess)
+  // for GameScene to resolve. aimAngle is in radians, same convention as the
+  // movement/aim code above (raw atan2, no visual offset).
+  tryAttack(scene: Phaser.Scene, aimAngle: number): AttackResult | null {
+    if (!this.canAttack) return null;
+    this.resetAttackCooldown();
+
+    if (this.isMeleeAttacker) {
+      return {
+        kind: 'melee',
+        angle: aimAngle,
+        range: HERO_MELEE_RANGE,
+        coneAngleDeg: HERO_MELEE_ANGLE,
+        damage: this.attackDamageStat.getValue(),
+        source: this,
+      };
+    }
+
+    const isPriestess = this.config.id === 'priestess';
+    const speed = isPriestess ? PRIESTESS_PROJECTILE_SPEED : HERO_PROJECTILE_SPEED;
+    const radius = isPriestess ? PROJECTILE_RADIUS_PRIESTESS : PROJECTILE_RADIUS_SORCERESS;
+    const attackElement: AttackElement = isPriestess ? 'magic' : rollSorceressElement();
+
+    const projectile = new Projectile(scene, this.x, this.y, {
+      damage: this.attackDamageStat.getValue(),
+      speed,
+      radius,
+      attackElement,
+      isPhysical: false,
+      sourceHero: this,
+    });
+    projectile.launch(aimAngle);
+
+    return { kind: 'projectile', projectile };
+  }
+
   // [BLOCK: Update]
   update(deltaSeconds: number, _leader?: Hero): void {
     this.tickStats(deltaSeconds);
+    this.tickAttackCooldown(deltaSeconds);
 
     // Resource regen
     this.manaPool?.tick(deltaSeconds);

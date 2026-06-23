@@ -9,17 +9,20 @@ import {
   HERO_SPAWN_X, HERO_SPAWN_Y,
   BEACON_LIGHT_RADIUS, BEACON_HEAL_RATE,
   DARKNESS_OVERLAY_DEPTH,
+  ENEMY_BODY_SIZE, COMPANION_ATTACK_RANGE, HERO_MELEE_RANGE,
 } from '@/game/config/constants';
 import { HERO_ROSTER } from '@/game/config/heroes';
 import { BEACON_ROSTER } from '@/game/config/beacons';
 import { registerAnimations } from '@/game/animations/registry';
-import { Hero } from '@/game/entities/Hero';
+import { Hero, type AttackResult } from '@/game/entities/Hero';
 import { Beacon } from '@/game/entities/Beacon';
 import { Enemy } from '@/game/entities/Enemy';
+import { Projectile } from '@/game/entities/Projectile';
 import { generateBeaconPositions } from '@/game/utils/BeaconPlacement';
 import { distance } from '@/game/utils/MathUtils';
 import { DarknessSystem } from '@/game/systems/DarknessSystem';
 import { SpawnSystem } from '@/game/systems/SpawnSystem';
+import { AggroSystem } from '@/game/systems/AggroSystem';
 import { ENEMY_ROSTER } from '@/game/config/enemies';
 import { useGameStore } from '@/ui/store/gameStore';
 
@@ -35,7 +38,11 @@ export class GameScene extends Phaser.Scene {
   // [BLOCK: Enemies]
   private enemies: Enemy[] = [];
   private spawnSystem: SpawnSystem = new SpawnSystem();
+  private aggroSystem: AggroSystem = new AggroSystem();
   private enemyConfigById = new Map(ENEMY_ROSTER.map((cfg) => [cfg.id, cfg]));
+
+  // [BLOCK: Projectiles]
+  private projectiles: Projectile[] = [];
 
   // [BLOCK: Darkness]
   private darknessSystem: DarknessSystem = new DarknessSystem();
@@ -172,6 +179,174 @@ export class GameScene extends Phaser.Scene {
     useGameStore.getState().setActiveLeader(index);
   }
 
+  // [BLOCK: Update Hero Attacks]
+  // Leader fires on held/clicked left mouse button toward the cursor.
+  // On a successful leader fire, every following (non-posted) companion
+  // mirrors that same angle through its own tryAttack (own cooldown still
+  // applies — may whiff if nothing's actually in range/cone). Posted
+  // companions instead run independent nearest-enemy targeting.
+  private updateHeroAttacks(pointer: Phaser.Input.Pointer, camera: Phaser.Cameras.Scene2D.Camera): void {
+    const leader = this.heroes[this.leaderIndex];
+    const worldX = pointer.x + camera.scrollX;
+    const worldY = pointer.y + camera.scrollY;
+    const leaderAngle = Math.atan2(worldY - leader.y, worldX - leader.x);
+
+    if (pointer.leftButtonDown()) {
+      const leaderResult = leader.tryAttack(this, leaderAngle);
+      if (leaderResult) {
+        this.resolveAttackResult(leaderResult);
+
+        this.heroes.forEach((hero, i) => {
+          if (i === this.leaderIndex || hero.isPosted) return;
+          const result = hero.tryAttack(this, leaderAngle);
+          if (result) this.resolveAttackResult(result);
+        });
+      }
+    }
+
+    // Posted companions — independent AI, nearest enemy, own cooldown.
+    this.heroes.forEach((hero, i) => {
+      if (i === this.leaderIndex || !hero.isPosted) return;
+
+      const nearest = this.findNearestEnemyTo(hero.x, hero.y);
+      if (!nearest) return;
+
+      const range = hero.isMeleeAttacker ? HERO_MELEE_RANGE : COMPANION_ATTACK_RANGE;
+      if (distance(hero.x, hero.y, nearest.x, nearest.y) > range) return;
+
+      const angle = Math.atan2(nearest.y - hero.y, nearest.x - hero.x);
+      const result = hero.tryAttack(this, angle);
+      if (result) this.resolveAttackResult(result);
+    });
+  }
+
+  // [BLOCK: Find Nearest Enemy]
+  private findNearestEnemyTo(x: number, y: number): Enemy | null {
+    let nearest: Enemy | null = null;
+    let nearestDist = Infinity;
+
+    for (const enemy of this.enemies) {
+      if (enemy.isDead) continue;
+      const d = distance(x, y, enemy.x, enemy.y);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearest = enemy;
+      }
+    }
+
+    return nearest;
+  }
+
+  // [BLOCK: Resolve Attack Result]
+  // Melee resolves immediately (cone hit-test + flash). Projectile just gets
+  // tracked — its own collision check happens in updateProjectiles each frame.
+  private resolveAttackResult(result: AttackResult): void {
+    if (result.kind === 'melee') {
+      this.applyMeleeHit(result);
+      this.spawnMeleeFlash(result.source.x, result.source.y, result.angle, result.range, result.coneAngleDeg);
+    } else {
+      this.projectiles.push(result.projectile);
+    }
+  }
+
+  // [BLOCK: Apply Melee Hit]
+  // Instant hit-test — all enemies within range AND inside the cone arc
+  // (angle convention matches movement code: raw atan2, no visual offset).
+  private applyMeleeHit(result: Extract<AttackResult, { kind: 'melee' }>): void {
+    const halfConeRad = (result.coneAngleDeg / 2) * (Math.PI / 180);
+
+    for (const enemy of this.enemies) {
+      if (enemy.isDead) continue;
+
+      const d = distance(result.source.x, result.source.y, enemy.x, enemy.y);
+      if (d > result.range) continue;
+
+      const angleToEnemy = Math.atan2(enemy.y - result.source.y, enemy.x - result.source.x);
+      let diff = angleToEnemy - result.angle;
+      diff = Math.atan2(Math.sin(diff), Math.cos(diff)); // normalize to [-PI, PI]
+
+      if (Math.abs(diff) <= halfConeRad) {
+        enemy.takeDamage(result.damage, true, result.source);
+      }
+    }
+  }
+
+  // [BLOCK: Spawn Melee Flash]
+  // White cone-shaped flash, fades over MELEE_FLASH_DURATION_MS then destroys.
+  private spawnMeleeFlash(x: number, y: number, angle: number, range: number, coneAngleDeg: number): void {
+    const halfConeRad = (coneAngleDeg / 2) * (Math.PI / 180);
+
+    const g = this.add.graphics();
+    g.fillStyle(0xffffff, 0.6);
+    g.slice(x, y, range, angle - halfConeRad, angle + halfConeRad, false);
+    g.fillPath();
+
+    this.tweens.add({
+      targets: g,
+      alpha: 0,
+      duration: 100,
+      onComplete: () => g.destroy(),
+    });
+  }
+
+  // [BLOCK: Update Projectiles]
+  // Moves each projectile (bounds-exit check lives in Projectile.update),
+  // checks first-hit-wins overlap against enemies (no piercing), then drops
+  // and destroys any projectile that's no longer alive.
+  private updateProjectiles(deltaSeconds: number): void {
+    this.projectiles.forEach((p) => p.update(deltaSeconds));
+
+    for (const projectile of this.projectiles) {
+      if (!projectile.alive) continue;
+
+      for (const enemy of this.enemies) {
+        if (enemy.isDead) continue;
+
+        const hitDistance = ENEMY_BODY_SIZE / 2 + projectile.radius;
+        if (distance(projectile.x, projectile.y, enemy.x, enemy.y) <= hitDistance) {
+          enemy.takeDamage(projectile.damage, projectile.isPhysical, projectile.sourceHero);
+          projectile.markHit();
+          break;
+        }
+      }
+    }
+
+    this.projectiles = this.projectiles.filter((p) => {
+      if (!p.alive) {
+        p.destroy();
+        return false;
+      }
+      return true;
+    });
+  }
+
+  // [BLOCK: Apply Aggro Updates]
+  // AggroSystem is stateless — it reads current enemy state and returns the
+  // range-return transition; this is the only place that actually mutates
+  // enemy.aggroState/aggroTarget from that computed result.
+  private applyAggroUpdates(): void {
+    const assignments = this.aggroSystem.update(this.enemies);
+    assignments.forEach((a) => {
+      a.enemy.aggroState = a.aggroState;
+      a.enemy.aggroTarget = a.aggroTarget;
+    });
+  }
+
+  // [BLOCK: Cleanup Dead Enemies]
+  // Destroys the Phaser object for anything Unit.die() already flagged dead
+  // this frame (from melee/projectile damage) and drops it from the array.
+  private cleanupDeadEnemies(): void {
+    const alive: Enemy[] = [];
+    for (const enemy of this.enemies) {
+      if (enemy.isDead) {
+        enemy.destroy();
+      } else {
+        alive.push(enemy);
+      }
+    }
+    this.enemies = alive;
+  }
+
   // [BLOCK: World Background]
   private createWorldBackground(): void {
     const bg = this.add.rectangle(WORLD_W / 2, WORLD_H / 2, WORLD_W, WORLD_H, 0x0a0a0f);
@@ -233,6 +408,11 @@ export class GameScene extends Phaser.Scene {
       hero.update(deltaSeconds);
     });
 
+    // Hero attacks — leader on input, companions mirror leader's angle unless
+    // posted (then independent nearest-enemy AI) — Phase 3 Chunk B
+    this.updateHeroAttacks(pointer, camera);
+    this.updateProjectiles(deltaSeconds);
+
     // Beacon proximity healing + per-beacon ticking (Phase 2)
     this.updateBeaconProximityHealing(deltaSeconds);
     this.beacons.forEach((beacon) => beacon.update(deltaSeconds));
@@ -242,9 +422,11 @@ export class GameScene extends Phaser.Scene {
     const litCount = this.beacons.filter((b) => b.isLit).length;
     const darknessLevel = this.updateDarkness(litCount, deltaSeconds);
 
-    // Enemy spawning + movement AI (Phase 3 — Chunk A: no combat yet)
+    // Aggro range-return check, then enemy spawning + movement AI (Phase 3)
+    this.applyAggroUpdates();
     this.updateEnemySpawning(deltaSeconds, darknessLevel);
     this.enemies.forEach((enemy) => enemy.update(deltaSeconds, this.beacons));
+    this.cleanupDeadEnemies();
 
     // Win/Loss — loss takes priority if both trigger the same frame (Phase 2)
     this.checkWinLossConditions(litCount);

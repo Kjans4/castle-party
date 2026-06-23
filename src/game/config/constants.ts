@@ -97,6 +97,9 @@ export const HERO_MELEE_ANGLE = 90;                  // degrees — Fencer cone 
 export const HERO_PROJECTILE_SPEED = 600;            // px/sec — Sorceress projectile
 export const PRIESTESS_PROJECTILE_SPEED = 500;       // px/sec — Priestess projectile
 export const COMPANION_ATTACK_RANGE = 400;           // px — range at which companions start attacking
+export const PROJECTILE_RADIUS_SORCERESS = 6;        // px
+export const PROJECTILE_RADIUS_PRIESTESS = 5;        // px
+export const MELEE_FLASH_DURATION_MS = 100;          // ms — white arc flash fade duration
 
 // [BLOCK: Respawn Timers]
 export const RESPAWN_1_DEAD = 45;   // seconds
