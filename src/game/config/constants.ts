@@ -112,3 +112,13 @@ export const BOSS_TIMES = [240, 480, 720, 960, 1140] as const; // 4:00, 8:00, 12
 // [BLOCK: Companion Behavior]
 export const COMPANION_FOLLOW_DISTANCE = 80;  // px — how close companions trail the leader
 export const COMPANION_OPACITY = 0.6;         // 60% opacity for AI companions
+
+// [BLOCK: XP System (Phase 3)]
+export const XP_COLLECT_RADIUS = TILE_SIZE;   // 64px (1 tile) — leader auto-collects within this range
+export const XP_SHARD_SKELETON = 10;
+export const XP_SHARD_ZOMBIE = 15;
+export const XP_SHARD_KNIGHT = 25;
+export const XP_THRESHOLDS = [100, 150, 220, 300] as const; // level 1->2, 2->3, 3->4, 4->5
+export const XP_SHARD_RADIUS = 5;             // px — visual circle
+export const XP_SHARD_GLOW_RADIUS = 9;        // px — subtle glow ring
+export const LEVEL_UP_HEAL_FRACTION = 0.3;    // 30% max HP heal to all heroes on level up

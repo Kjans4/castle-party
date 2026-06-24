@@ -6,13 +6,30 @@
 // Active leader is highlighted with a colored border and full opacity.
 // Click a portrait to switch the active leader (calls back to GameScene via store).
 // Keyboard switch (1/2/3) is handled in GameScene and syncs via store.
+// Briefly glows white on every party level-up (Phase 3), keyed off levelUpFlashId.
 
+import { useEffect, useRef, useState } from 'react';
 import { useGameStore } from '@/ui/store/gameStore';
 import { HERO_ROSTER } from '@/game/config/heroes';
+
+const FLASH_DURATION_MS = 600;
 
 export default function HeroPortraits() {
   const activeIndex  = useGameStore((s) => s.activeLeaderIndex);
   const setLeaderIdx = useGameStore((s) => s.setActiveLeader);
+  const levelUpFlashId = useGameStore((s) => s.levelUpFlashId);
+
+  const [isFlashing, setIsFlashing] = useState(false);
+  const lastFlashId = useRef(levelUpFlashId);
+
+  useEffect(() => {
+    if (levelUpFlashId !== lastFlashId.current) {
+      lastFlashId.current = levelUpFlashId;
+      setIsFlashing(true);
+      const timeout = setTimeout(() => setIsFlashing(false), FLASH_DURATION_MS);
+      return () => clearTimeout(timeout);
+    }
+  }, [levelUpFlashId]);
 
   return (
     <div style={{
@@ -40,13 +57,16 @@ export default function HeroPortraits() {
               alignItems: 'center',
               gap: '8px',
               padding: '6px 10px 6px 6px',
-              border: `1px solid ${isActive ? color : 'rgba(255,255,255,0.1)'}`,
-              backgroundColor: isActive
+              border: `1px solid ${isFlashing ? 'rgba(255,255,255,0.9)' : isActive ? color : 'rgba(255,255,255,0.1)'}`,
+              backgroundColor: isFlashing
+                ? 'rgba(255,255,255,0.18)'
+                : isActive
                 ? `rgba(${rgb}, 0.12)`
                 : 'rgba(0,0,0,0.5)',
+              boxShadow: isFlashing ? '0 0 16px rgba(255,255,255,0.7)' : 'none',
               opacity: isActive ? 1 : 0.55,
               cursor: 'pointer',
-              transition: 'all 0.15s',
+              transition: 'all 0.3s',
               pointerEvents: 'auto',
               minWidth: '140px',
             }}

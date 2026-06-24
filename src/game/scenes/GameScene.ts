@@ -10,6 +10,8 @@ import {
   BEACON_LIGHT_RADIUS, BEACON_HEAL_RATE,
   DARKNESS_OVERLAY_DEPTH,
   ENEMY_BODY_SIZE, COMPANION_ATTACK_RANGE, HERO_MELEE_RANGE,
+  XP_COLLECT_RADIUS, XP_SHARD_SKELETON, XP_SHARD_ZOMBIE, XP_SHARD_KNIGHT,
+  LEVEL_UP_HEAL_FRACTION,
 } from '@/game/config/constants';
 import { HERO_ROSTER } from '@/game/config/heroes';
 import { BEACON_ROSTER } from '@/game/config/beacons';
@@ -18,6 +20,7 @@ import { Hero, type AttackResult } from '@/game/entities/Hero';
 import { Beacon } from '@/game/entities/Beacon';
 import { Enemy } from '@/game/entities/Enemy';
 import { Projectile } from '@/game/entities/Projectile';
+import { XPShard } from '@/game/entities/XPShard';
 import { generateBeaconPositions } from '@/game/utils/BeaconPlacement';
 import { distance } from '@/game/utils/MathUtils';
 import { DarknessSystem } from '@/game/systems/DarknessSystem';
@@ -25,6 +28,16 @@ import { SpawnSystem } from '@/game/systems/SpawnSystem';
 import { AggroSystem } from '@/game/systems/AggroSystem';
 import { ENEMY_ROSTER } from '@/game/config/enemies';
 import { useGameStore } from '@/ui/store/gameStore';
+
+// [BLOCK: XP Value Lookup]
+// Maps enemy config id -> XP shard value, per castle-party-phase3-plan.md
+// Section 10's named constants. Kept here rather than on EnemyConfig itself
+// since the plan defines these as standalone constants, not config fields.
+const XP_VALUE_BY_ENEMY_ID: Record<string, number> = {
+  skeleton: XP_SHARD_SKELETON,
+  zombie: XP_SHARD_ZOMBIE,
+  knight: XP_SHARD_KNIGHT,
+};
 
 // [BLOCK: Game Scene Class]
 export class GameScene extends Phaser.Scene {
@@ -43,6 +56,9 @@ export class GameScene extends Phaser.Scene {
 
   // [BLOCK: Projectiles]
   private projectiles: Projectile[] = [];
+
+  // [BLOCK: XP Shards]
+  private xpShards: XPShard[] = [];
 
   // [BLOCK: Darkness]
   private darknessSystem: DarknessSystem = new DarknessSystem();
@@ -334,17 +350,66 @@ export class GameScene extends Phaser.Scene {
 
   // [BLOCK: Cleanup Dead Enemies]
   // Destroys the Phaser object for anything Unit.die() already flagged dead
-  // this frame (from melee/projectile damage) and drops it from the array.
+  // this frame (from melee/projectile damage), drops a shard at its last
+  // position first, and removes it from the array.
   private cleanupDeadEnemies(): void {
     const alive: Enemy[] = [];
     for (const enemy of this.enemies) {
       if (enemy.isDead) {
+        this.spawnXPShard(enemy.x, enemy.y, enemy.config.id);
         enemy.destroy();
       } else {
         alive.push(enemy);
       }
     }
     this.enemies = alive;
+  }
+
+  // [BLOCK: Spawn XP Shard]
+  private spawnXPShard(x: number, y: number, enemyId: string): void {
+    const value = XP_VALUE_BY_ENEMY_ID[enemyId];
+    if (!value) return; // unknown id or 0 value — no shard
+
+    this.xpShards.push(new XPShard(this, x, y, value));
+  }
+
+  // [BLOCK: Update XP Shards]
+  // Only the active Leader collects — companions never do, per the plan.
+  // A level-up (detected via before/after comparison) triggers the party heal.
+  private updateXPShards(deltaSeconds: number): void {
+    this.xpShards.forEach((shard) => shard.update(deltaSeconds));
+
+    const leader = this.heroes[this.leaderIndex];
+    const remaining: XPShard[] = [];
+
+    for (const shard of this.xpShards) {
+      if (distance(leader.x, leader.y, shard.x, shard.y) <= XP_COLLECT_RADIUS) {
+        this.collectXPShard(shard);
+      } else {
+        remaining.push(shard);
+      }
+    }
+
+    this.xpShards = remaining;
+  }
+
+  // [BLOCK: Collect XP Shard]
+  private collectXPShard(shard: XPShard): void {
+    const store = useGameStore.getState();
+    const levelBefore = store.partyLevel;
+
+    store.addXP(shard.value);
+
+    if (useGameStore.getState().partyLevel > levelBefore) {
+      this.healAllHeroes(LEVEL_UP_HEAL_FRACTION);
+    }
+
+    shard.destroy();
+  }
+
+  // [BLOCK: Heal All Heroes]
+  private healAllHeroes(fraction: number): void {
+    this.heroes.forEach((hero) => hero.heal(hero.maxHp * fraction));
   }
 
   // [BLOCK: World Background]
@@ -427,6 +492,9 @@ export class GameScene extends Phaser.Scene {
     this.updateEnemySpawning(deltaSeconds, darknessLevel);
     this.enemies.forEach((enemy) => enemy.update(deltaSeconds, this.beacons));
     this.cleanupDeadEnemies();
+
+    // XP shard collection + leveling (Phase 3 — Chunk C)
+    this.updateXPShards(deltaSeconds);
 
     // Win/Loss — loss takes priority if both trigger the same frame (Phase 2)
     this.checkWinLossConditions(litCount);

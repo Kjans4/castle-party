@@ -16,6 +16,7 @@ import Timer from '@/ui/hud/Timer';
 import HeroPortraits from '@/ui/hud/HeroPortraits';
 import BeaconStatus from '@/ui/hud/BeaconStatus';
 import ResourceBars from '@/ui/hud/ResourceBars';
+import XPBar from '@/ui/hud/XPBar';
 import { useGameStore } from '@/ui/store/gameStore';
 
 // [BLOCK: Dynamic Import — SSR Disabled]
@@ -116,6 +117,16 @@ export default function GamePage() {
           <ResourceBars />
         </div>
 
+        {/* [BLOCK: Bottom-Center — XP Bar] */}
+        <div style={{
+          position: 'absolute',
+          bottom: '20px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+        }}>
+          <XPBar />
+        </div>
+
         {/* [BLOCK: Phase Label] */}
         <p style={{
           position: 'absolute',
@@ -127,7 +138,7 @@ export default function GamePage() {
           color: 'rgba(255,255,255,0.1)',
           margin: 0,
         }}>
-          Phase 2 — Beacons &amp; Darkness
+          Phase 3 — Enemy Horde &amp; Combat
         </p>
 
       </div>

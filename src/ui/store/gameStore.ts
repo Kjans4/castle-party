@@ -12,7 +12,18 @@
 import { create } from 'zustand';
 import type { HeroConfig } from '@/game/config/heroes';
 import { HERO_ROSTER } from '@/game/config/heroes';
-import { RUN_DURATION_SECONDS, BEACON_COUNT } from '@/game/config/constants';
+import { RUN_DURATION_SECONDS, BEACON_COUNT, XP_THRESHOLDS } from '@/game/config/constants';
+
+// [BLOCK: XP Threshold Helper]
+// currentLevel is the level the party is AT (about to level up to currentLevel+1).
+// Levels 1-4 read the explicit table; level 5+ adds 100 per level beyond it,
+// per castle-party-phase3-plan.md Section 9 "Party Level & XP Threshold".
+function getXPThresholdForLevel(currentLevel: number): number {
+  const idx = currentLevel - 1;
+  if (idx < XP_THRESHOLDS.length) return XP_THRESHOLDS[idx];
+  const extraLevels = idx - (XP_THRESHOLDS.length - 1);
+  return XP_THRESHOLDS[XP_THRESHOLDS.length - 1] + 100 * extraLevels;
+}
 
 // [BLOCK: Beacon State Type]
 export interface BeaconState {
@@ -46,6 +57,12 @@ interface GameStore {
   manaPercent: number;         // 0–100
   staminaPercent: number;      // 0–100
 
+  // XP & Leveling (Phase 3)
+  partyXP: number;             // progress within the current level
+  partyLevel: number;          // starts at 1
+  xpThreshold: number;         // XP needed to reach the next level
+  levelUpFlashId: number;      // increments on every level-up — HUD watches this to trigger a one-shot flash
+
   // Actions
   setSquad: (squad: HeroConfig[]) => void;
   setActiveLeader: (index: number) => void;
@@ -57,6 +74,7 @@ interface GameStore {
   setManaPercent: (value: number) => void;
   setStaminaPercent: (value: number) => void;
   endRun: (result: 'victory' | 'defeat') => void;
+  addXP: (amount: number) => void;
 }
 
 // [BLOCK: Default Beacon States]
@@ -88,6 +106,12 @@ export const useGameStore = create<GameStore>((set) => ({
   manaPercent: 100,
   staminaPercent: 100,
 
+  // XP & Leveling
+  partyXP: 0,
+  partyLevel: 1,
+  xpThreshold: getXPThresholdForLevel(1),
+  levelUpFlashId: 0,
+
   // [BLOCK: Actions]
   setSquad: (squad) => set({ squad }),
 
@@ -110,6 +134,10 @@ export const useGameStore = create<GameStore>((set) => ({
       manaPercent: 100,
       staminaPercent: 100,
       beaconStates: DEFAULT_BEACON_STATES.slice(0, BEACON_COUNT),
+      partyXP: 0,
+      partyLevel: 1,
+      xpThreshold: getXPThresholdForLevel(1),
+      levelUpFlashId: 0,
     }),
 
   setBeaconState: (index, partial) =>
@@ -129,6 +157,33 @@ export const useGameStore = create<GameStore>((set) => ({
   // marks the run inactive. game/page.tsx watches runResult and navigates
   // to /results when it changes from null.
   endRun: (result) => set({ isRunActive: false, runResult: result }),
+
+  // [BLOCK: Add XP]
+  // Carries overflow across multiple level-ups if a single gain clears more
+  // than one threshold (e.g. a big XP dump). levelUpFlashId increments once
+  // per call where at least one level-up happened, not once per level — the
+  // HUD just needs a changed value to trigger its flash, not an exact count.
+  addXP: (amount) =>
+    set((state) => {
+      let xp = state.partyXP + amount;
+      let level = state.partyLevel;
+      let threshold = state.xpThreshold;
+      let leveledUp = false;
+
+      while (xp >= threshold) {
+        xp -= threshold;
+        level += 1;
+        threshold = getXPThresholdForLevel(level);
+        leveledUp = true;
+      }
+
+      return {
+        partyXP: xp,
+        partyLevel: level,
+        xpThreshold: threshold,
+        levelUpFlashId: leveledUp ? state.levelUpFlashId + 1 : state.levelUpFlashId,
+      };
+    }),
 }));
 
 // [BLOCK: Timer Formatter]
