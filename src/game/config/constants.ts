@@ -122,3 +122,20 @@ export const XP_THRESHOLDS = [100, 150, 220, 300] as const; // level 1->2, 2->3,
 export const XP_SHARD_RADIUS = 5;             // px — visual circle
 export const XP_SHARD_GLOW_RADIUS = 9;        // px — subtle glow ring
 export const LEVEL_UP_HEAL_FRACTION = 0.3;    // 30% max HP heal to all heroes on level up
+export const XP_SHARD_GHOST = 20;             // Phase 4 — value not specified in plan; assumed between
+                                               // Zombie (15) and Knight (25) to match Ghost's uncommon rarity. Flag if wrong.
+
+// [BLOCK: Resistance System (Phase 4)]
+// Weighted roll for "random" resistance enemies. Magic is the implicit
+// remainder (50/10/10/10/10/10 sums to 100%) — listed explicitly for parity
+// with castle-party-phase4-plan.md Section 3's table.
+export const RESISTANCE_ROLL_NONE = 0.50;
+export const RESISTANCE_ROLL_PHYSICAL = 0.10;
+export const RESISTANCE_ROLL_FIRE = 0.10;
+export const RESISTANCE_ROLL_ICE = 0.10;
+export const RESISTANCE_ROLL_ELECTRIC = 0.10;
+export const RESISTANCE_ROLL_MAGIC = 0.10;
+
+// [BLOCK: Immunity Feedback (Phase 4)]
+export const IMMUNE_FLASH_DURATION = 100;  // ms — white flash on resisted hit
+export const IMMUNE_TEXT_DURATION = 800;   // ms — "IMMUNE" floating text fade

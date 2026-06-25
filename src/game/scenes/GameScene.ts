@@ -2,6 +2,11 @@
 // [BLOCK: Game Scene]
 // Main gameplay scene. Owns world, camera, heroes, beacons, and input.
 // Writes to Zustand store each tick — React HUD reads from it.
+//
+// Phase 4 patch: applyMeleeHit and updateProjectiles now route damage through
+// CombatUtils.applyDamage() instead of calling enemy.takeDamage() directly,
+// so resistance (and Ghost's physical immunity) resolves before any damage
+// or aggro-flip happens. Everything else is unchanged from Phase 3.
 
 import Phaser from 'phaser';
 import {
@@ -10,7 +15,7 @@ import {
   BEACON_LIGHT_RADIUS, BEACON_HEAL_RATE,
   DARKNESS_OVERLAY_DEPTH,
   ENEMY_BODY_SIZE, COMPANION_ATTACK_RANGE, HERO_MELEE_RANGE,
-  XP_COLLECT_RADIUS, XP_SHARD_SKELETON, XP_SHARD_ZOMBIE, XP_SHARD_KNIGHT,
+  XP_COLLECT_RADIUS, XP_SHARD_SKELETON, XP_SHARD_ZOMBIE, XP_SHARD_KNIGHT, XP_SHARD_GHOST,
   LEVEL_UP_HEAL_FRACTION,
 } from '@/game/config/constants';
 import { HERO_ROSTER } from '@/game/config/heroes';
@@ -23,6 +28,7 @@ import { Projectile } from '@/game/entities/Projectile';
 import { XPShard } from '@/game/entities/XPShard';
 import { generateBeaconPositions } from '@/game/utils/BeaconPlacement';
 import { distance } from '@/game/utils/MathUtils';
+import { applyDamage } from '@/game/utils/CombatUtils';
 import { DarknessSystem } from '@/game/systems/DarknessSystem';
 import { SpawnSystem } from '@/game/systems/SpawnSystem';
 import { AggroSystem } from '@/game/systems/AggroSystem';
@@ -31,12 +37,13 @@ import { useGameStore } from '@/ui/store/gameStore';
 
 // [BLOCK: XP Value Lookup]
 // Maps enemy config id -> XP shard value, per castle-party-phase3-plan.md
-// Section 10's named constants. Kept here rather than on EnemyConfig itself
-// since the plan defines these as standalone constants, not config fields.
+// Section 10's named constants. Ghost added Phase 4 — see constants.ts note,
+// its value wasn't specified in castle-party-phase4-plan.md and is assumed.
 const XP_VALUE_BY_ENEMY_ID: Record<string, number> = {
   skeleton: XP_SHARD_SKELETON,
   zombie: XP_SHARD_ZOMBIE,
   knight: XP_SHARD_KNIGHT,
+  ghost: XP_SHARD_GHOST,
 };
 
 // [BLOCK: Game Scene Class]
@@ -65,7 +72,6 @@ export class GameScene extends Phaser.Scene {
   private darknessOverlay!: Phaser.GameObjects.Rectangle;
 
   // [BLOCK: Run Ending — Win/Loss]
-  // DEFEAT_FADE_SECONDS matches the plan's "fades to full black over 1.5s".
   private static readonly DEFEAT_FADE_SECONDS = 1.5;
   private runEnded: boolean = false;
   private defeatFadeElapsed: number = 0;
@@ -88,7 +94,6 @@ export class GameScene extends Phaser.Scene {
 
   // [BLOCK: Preload]
   preload(): void {
-    // Generate 1×1 white placeholder texture for animations
     const g = this.make.graphics({ x: 0, y: 0 });
     g.fillStyle(0xffffff);
     g.fillRect(0, 0, TILE_SIZE, TILE_SIZE);
@@ -100,15 +105,12 @@ export class GameScene extends Phaser.Scene {
   create(): void {
     registerAnimations(this);
 
-    // World setup
     this.physics.world.setBounds(0, 0, WORLD_W, WORLD_H);
     this.createWorldBackground();
     this.createGridOverlay();
 
-    // Camera setup
     this.cameras.main.setBounds(0, 0, WORLD_W, WORLD_H);
 
-    // Input setup
     this.wasd = {
       up:    this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.W),
       down:  this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.S),
@@ -119,41 +121,26 @@ export class GameScene extends Phaser.Scene {
     this.keys2 = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.TWO);
     this.keys3 = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.THREE);
 
-    // Spawn heroes
     this.spawnHeroes();
-
-    // Spawn beacons (Phase 2)
     this.spawnBeacons();
-
-    // Darkness overlay (Phase 2)
     this.createDarknessOverlay();
 
-    // Start timer
     useGameStore.getState().setRunActive(true);
   }
 
   // [BLOCK: Spawn Heroes]
-  // Heroes spawn at the left edge of the world, vertically centered.
   private spawnHeroes(): void {
     const spacing = 60;
 
     HERO_ROSTER.forEach((config, i) => {
-      const hero = new Hero(
-        this,
-        HERO_SPAWN_X,
-        HERO_SPAWN_Y + (i - 1) * spacing,
-        config
-      );
+      const hero = new Hero(this, HERO_SPAWN_X, HERO_SPAWN_Y + (i - 1) * spacing, config);
       this.heroes.push(hero);
     });
 
-    // Set initial leader
     this.setLeader(0);
   }
 
   // [BLOCK: Spawn Beacons]
-  // Generates randomized positions via rejection sampling, then instantiates
-  // a Beacon entity per config in BEACON_ROSTER (Crown is always index 0).
   private spawnBeacons(): void {
     const positions = generateBeaconPositions({ x: HERO_SPAWN_X, y: HERO_SPAWN_Y });
 
@@ -167,8 +154,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Create Darkness Overlay]
-  // Full-screen dark rectangle above the world, below heroes/beacons (depth 15).
-  // Starts fully transparent — DarknessSystem lerps its alpha live each frame.
   private createDarknessOverlay(): void {
     this.darknessOverlay = this.add.rectangle(WORLD_W / 2, WORLD_H / 2, WORLD_W, WORLD_H, 0x000000, 0);
     this.darknessOverlay.setDepth(DARKNESS_OVERLAY_DEPTH);
@@ -179,28 +164,13 @@ export class GameScene extends Phaser.Scene {
     if (index < 0 || index >= this.heroes.length) return;
 
     this.leaderIndex = index;
-
-    // Update visuals on all heroes
     this.heroes.forEach((hero, i) => hero.setAsLeader(i === index));
 
-    // Camera follows new leader with lerp
-    this.cameras.main.startFollow(
-      this.heroes[index],
-      true,
-      CAMERA_LERP,
-      CAMERA_LERP
-    );
-
-    // Sync to Zustand so HUD portrait updates
+    this.cameras.main.startFollow(this.heroes[index], true, CAMERA_LERP, CAMERA_LERP);
     useGameStore.getState().setActiveLeader(index);
   }
 
   // [BLOCK: Update Hero Attacks]
-  // Leader fires on held/clicked left mouse button toward the cursor.
-  // On a successful leader fire, every following (non-posted) companion
-  // mirrors that same angle through its own tryAttack (own cooldown still
-  // applies — may whiff if nothing's actually in range/cone). Posted
-  // companions instead run independent nearest-enemy targeting.
   private updateHeroAttacks(pointer: Phaser.Input.Pointer, camera: Phaser.Cameras.Scene2D.Camera): void {
     const leader = this.heroes[this.leaderIndex];
     const worldX = pointer.x + camera.scrollX;
@@ -254,8 +224,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Resolve Attack Result]
-  // Melee resolves immediately (cone hit-test + flash). Projectile just gets
-  // tracked — its own collision check happens in updateProjectiles each frame.
   private resolveAttackResult(result: AttackResult): void {
     if (result.kind === 'melee') {
       this.applyMeleeHit(result);
@@ -266,8 +234,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Apply Melee Hit]
-  // Instant hit-test — all enemies within range AND inside the cone arc
-  // (angle convention matches movement code: raw atan2, no visual offset).
+  // Phase 4: routes through CombatUtils.applyDamage with element 'physical'
+  // (Fencer's Slice is always physical per characters.md) instead of calling
+  // enemy.takeDamage() directly — resistance resolves before damage/aggro.
   private applyMeleeHit(result: Extract<AttackResult, { kind: 'melee' }>): void {
     const halfConeRad = (result.coneAngleDeg / 2) * (Math.PI / 180);
 
@@ -279,16 +248,15 @@ export class GameScene extends Phaser.Scene {
 
       const angleToEnemy = Math.atan2(enemy.y - result.source.y, enemy.x - result.source.x);
       let diff = angleToEnemy - result.angle;
-      diff = Math.atan2(Math.sin(diff), Math.cos(diff)); // normalize to [-PI, PI]
+      diff = Math.atan2(Math.sin(diff), Math.cos(diff));
 
       if (Math.abs(diff) <= halfConeRad) {
-        enemy.takeDamage(result.damage, true, result.source);
+        applyDamage(enemy, result.damage, 'physical', result.source);
       }
     }
   }
 
   // [BLOCK: Spawn Melee Flash]
-  // White cone-shaped flash, fades over MELEE_FLASH_DURATION_MS then destroys.
   private spawnMeleeFlash(x: number, y: number, angle: number, range: number, coneAngleDeg: number): void {
     const halfConeRad = (coneAngleDeg / 2) * (Math.PI / 180);
 
@@ -306,9 +274,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Update Projectiles]
-  // Moves each projectile (bounds-exit check lives in Projectile.update),
-  // checks first-hit-wins overlap against enemies (no piercing), then drops
-  // and destroys any projectile that's no longer alive.
+  // Phase 4: routes through CombatUtils.applyDamage using the projectile's
+  // actual attackElement (fire/ice/electric/magic) instead of just its
+  // isPhysical flag — resistance needs the specific element to check magic
+  // resistance correctly; isPhysical alone can't distinguish fire from ice.
   private updateProjectiles(deltaSeconds: number): void {
     this.projectiles.forEach((p) => p.update(deltaSeconds));
 
@@ -320,7 +289,7 @@ export class GameScene extends Phaser.Scene {
 
         const hitDistance = ENEMY_BODY_SIZE / 2 + projectile.radius;
         if (distance(projectile.x, projectile.y, enemy.x, enemy.y) <= hitDistance) {
-          enemy.takeDamage(projectile.damage, projectile.isPhysical, projectile.sourceHero);
+          applyDamage(enemy, projectile.damage, projectile.attackElement, projectile.sourceHero);
           projectile.markHit();
           break;
         }
@@ -337,9 +306,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Apply Aggro Updates]
-  // AggroSystem is stateless — it reads current enemy state and returns the
-  // range-return transition; this is the only place that actually mutates
-  // enemy.aggroState/aggroTarget from that computed result.
   private applyAggroUpdates(): void {
     const assignments = this.aggroSystem.update(this.enemies);
     assignments.forEach((a) => {
@@ -349,9 +315,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Cleanup Dead Enemies]
-  // Destroys the Phaser object for anything Unit.die() already flagged dead
-  // this frame (from melee/projectile damage), drops a shard at its last
-  // position first, and removes it from the array.
   private cleanupDeadEnemies(): void {
     const alive: Enemy[] = [];
     for (const enemy of this.enemies) {
@@ -368,14 +331,12 @@ export class GameScene extends Phaser.Scene {
   // [BLOCK: Spawn XP Shard]
   private spawnXPShard(x: number, y: number, enemyId: string): void {
     const value = XP_VALUE_BY_ENEMY_ID[enemyId];
-    if (!value) return; // unknown id or 0 value — no shard
+    if (!value) return;
 
     this.xpShards.push(new XPShard(this, x, y, value));
   }
 
   // [BLOCK: Update XP Shards]
-  // Only the active Leader collects — companions never do, per the plan.
-  // A level-up (detected via before/after comparison) triggers the party heal.
   private updateXPShards(deltaSeconds: number): void {
     this.xpShards.forEach((shard) => shard.update(deltaSeconds));
 
@@ -440,16 +401,13 @@ export class GameScene extends Phaser.Scene {
   update(_time: number, delta: number): void {
     const deltaSeconds = delta / 1000;
 
-    // Once the run has ended, only the defeat fade (if any) continues ticking.
     if (this.runEnded) {
       if (this.isDefeatFading) this.tickDefeatFade(deltaSeconds);
       return;
     }
 
-    // Tick run timer
     useGameStore.getState().tickTimer(deltaSeconds);
 
-    // Hero switch input
     if (Phaser.Input.Keyboard.JustDown(this.keys1)) this.setLeader(0);
     if (Phaser.Input.Keyboard.JustDown(this.keys2)) this.setLeader(1);
     if (Phaser.Input.Keyboard.JustDown(this.keys3)) this.setLeader(2);
@@ -458,55 +416,38 @@ export class GameScene extends Phaser.Scene {
     const pointer = this.input.activePointer;
     const camera = this.cameras.main;
 
-    // Update each hero
     this.heroes.forEach((hero, i) => {
       if (i === this.leaderIndex) {
-        hero.updateAsLeader(
-          this.input.keyboard!.createCursorKeys(),
-          this.wasd,
-          pointer,
-          camera
-        );
+        hero.updateAsLeader(this.input.keyboard!.createCursorKeys(), this.wasd, pointer, camera);
       } else {
         hero.updateAsCompanion(leader);
       }
       hero.update(deltaSeconds);
     });
 
-    // Hero attacks — leader on input, companions mirror leader's angle unless
-    // posted (then independent nearest-enemy AI) — Phase 3 Chunk B
     this.updateHeroAttacks(pointer, camera);
     this.updateProjectiles(deltaSeconds);
 
-    // Beacon proximity healing + per-beacon ticking (Phase 2)
     this.updateBeaconProximityHealing(deltaSeconds);
     this.beacons.forEach((beacon) => beacon.update(deltaSeconds));
     this.syncBeaconStateToStore();
 
-    // Darkness — live level + overlay alpha (Phase 2)
     const litCount = this.beacons.filter((b) => b.isLit).length;
     const darknessLevel = this.updateDarkness(litCount, deltaSeconds);
 
-    // Aggro range-return check, then enemy spawning + movement AI (Phase 3)
     this.applyAggroUpdates();
     this.updateEnemySpawning(deltaSeconds, darknessLevel);
     this.enemies.forEach((enemy) => enemy.update(deltaSeconds, this.beacons));
     this.cleanupDeadEnemies();
 
-    // XP shard collection + leveling (Phase 3 — Chunk C)
     this.updateXPShards(deltaSeconds);
 
-    // Win/Loss — loss takes priority if both trigger the same frame (Phase 2)
     this.checkWinLossConditions(litCount);
 
-    // Sync resource bars to Zustand
     this.syncResourceBars();
   }
 
   // [BLOCK: Check Win/Loss Conditions]
-  // Loss: all 7 beacons extinguished -> defeat fade -> PostRun(victory: false)
-  // Win: timer reaches 0:00 AND at least 1 beacon still lit -> PostRun(victory: true)
-  // If both are true on the same frame, loss wins (checked first).
   private checkWinLossConditions(litCount: number): void {
     if (this.runEnded) return;
 
@@ -523,8 +464,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Start Defeat Fade]
-  // Begins the 1.5s fade-to-black sequence. The darkness overlay is driven
-  // directly here instead of through DarknessSystem for this final stretch.
   private startDefeatFade(): void {
     if (this.runEnded) return;
     this.runEnded = true;
@@ -546,9 +485,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Beacon Proximity Healing]
-  // For each beacon, check all heroes — first hero within BEACON_LIGHT_RADIUS
-  // triggers the heal. Multiple heroes in range do not stack (break on first hit).
-  // Skips beacons already at full meter.
   private updateBeaconProximityHealing(deltaSeconds: number): void {
     const healAmount = BEACON_HEAL_RATE * deltaSeconds;
 
@@ -558,34 +494,28 @@ export class GameScene extends Phaser.Scene {
       for (const hero of this.heroes) {
         if (distance(hero.x, hero.y, beacon.x, beacon.y) <= BEACON_LIGHT_RADIUS) {
           beacon.heal(healAmount);
-          break; // one hero is enough, no stacking
+          break;
         }
       }
     }
   }
 
   // [BLOCK: Sync Beacon State To Store]
-  // Pushes isLit/fireMeter for every beacon to Zustand so the HUD can react.
   private syncBeaconStateToStore(): void {
     const store = useGameStore.getState();
     this.beacons.forEach((beacon, i) => {
-      store.setBeaconState(i, {
-        isLit: beacon.isLit,
-        fireMeter: beacon.fireMeter,
-      });
+      store.setBeaconState(i, { isLit: beacon.isLit, fireMeter: beacon.fireMeter });
     });
   }
 
   // [BLOCK: Update Enemy Spawning]
-  // Pulls spawn requests from SpawnSystem (empty most frames), instantiates
-  // an Enemy per request, and adds it to the tracked array.
   private updateEnemySpawning(deltaSeconds: number, darknessLevel: number): void {
     const clusterCenter = { x: WORLD_W / 2, y: WORLD_H / 2 };
     const requests = this.spawnSystem.update(deltaSeconds, darknessLevel, clusterCenter);
 
     for (const request of requests) {
       const config = this.enemyConfigById.get(request.enemyId);
-      if (!config) continue; // unknown id — skip rather than crash
+      if (!config) continue;
 
       const enemy = new Enemy(this, request.x, request.y, config);
       this.enemies.push(enemy);
@@ -593,9 +523,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Update Darkness]
-  // Advances DarknessSystem's lerp using the already-computed lit count,
-  // applies the resulting alpha to the overlay rectangle, syncs the level to
-  // the store, and returns the level so the spawn loop can scale off it too.
   private updateDarkness(litCount: number, deltaSeconds: number): number {
     const { level, alpha } = this.darknessSystem.update(litCount, deltaSeconds);
 
@@ -606,14 +533,13 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Sync Resource Bars]
-  // Finds the combined mana/stamina state and pushes to store for HUD.
   private syncResourceBars(): void {
     let manaTotal = 0;
     let manaCount = 0;
     let staminaTotal = 0;
     let staminaCount = 0;
 
-    this.heroes.forEach(hero => {
+    this.heroes.forEach((hero) => {
       if (hero.manaPool) {
         manaTotal += hero.manaPool.current;
         manaCount++;
@@ -625,7 +551,7 @@ export class GameScene extends Phaser.Scene {
     });
 
     const store = useGameStore.getState();
-    if (manaCount > 0)    store.setManaPercent(manaTotal / manaCount);
+    if (manaCount > 0) store.setManaPercent(manaTotal / manaCount);
     if (staminaCount > 0) store.setStaminaPercent(staminaTotal / staminaCount);
   }
 }

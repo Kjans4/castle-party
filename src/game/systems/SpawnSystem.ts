@@ -1,5 +1,5 @@
 // [File: src/game/systems/SpawnSystem.ts]
-// [BLOCK: Spawn System — Phase 3]
+// [BLOCK: Spawn System — Phase 3 + Phase 4]
 // Pure logic, no Phaser dependency — GameScene calls update() each frame and
 // instantiates Enemy objects from the returned requests.
 //
@@ -8,6 +8,11 @@
 // union of 7 separate beacon light circles, not a perfect ring — this is a
 // deliberate Phase 3 simplification, flagged for revisit if it reads wrong
 // in playtesting (e.g. enemies popping in visibly inside still-lit pockets).
+//
+// Phase 4 adds Ghost to the weighted pool at a low (uncommon) weight. The
+// "occasional" framing from castle-party-phase4-plan.md Section 4 is
+// approximated here as a flat weight rather than a per-batch mixed-in rate,
+// since this spawn system has no batch/type concept to hook into yet.
 
 import {
   WORLD_W,
@@ -32,12 +37,15 @@ export interface ClusterCenter {
   y: number;
 }
 
-// [BLOCK: Phase 3 Enemy Pool]
-// Only these 3 enemies are live in Phase 3 — weighted per castle-party-phase3-plan.md.
+// [BLOCK: Enemy Pool — Phase 3 + Phase 4]
+// Skeleton/zombie/knight per castle-party-phase3-plan.md. Ghost added Phase 4
+// as uncommon — weight 15 puts it well below Knight (20) but still seen
+// regularly enough to teach the resistance mechanic during early playtesting.
 const ENEMY_WEIGHTS: { id: string; weight: number }[] = [
   { id: 'skeleton', weight: 50 },
   { id: 'zombie', weight: 30 },
   { id: 'knight', weight: 20 },
+  { id: 'ghost', weight: 15 },
 ];
 const TOTAL_WEIGHT = ENEMY_WEIGHTS.reduce((sum, e) => sum + e.weight, 0);
 
@@ -99,7 +107,7 @@ export class SpawnSystem {
   }
 
   // [BLOCK: Roll Enemy Type]
-  // Weighted random selection from the Phase 3 pool (50/30/20).
+  // Weighted random selection from the pool (50/30/20/15 as of Phase 4).
   private rollEnemyType(): string {
     const roll = Math.random() * TOTAL_WEIGHT;
     let cumulative = 0;
