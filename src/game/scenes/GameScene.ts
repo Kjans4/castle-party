@@ -14,7 +14,7 @@ import {
   HERO_SPAWN_X, HERO_SPAWN_Y,
   BEACON_LIGHT_RADIUS, BEACON_HEAL_RATE,
   DARKNESS_OVERLAY_DEPTH,
-  ENEMY_BODY_SIZE, COMPANION_ATTACK_RANGE, HERO_MELEE_RANGE,
+  ENEMY_BODY_SIZE, COMPANION_ATTACK_RANGE, HERO_MELEE_RANGE, HERO_BODY_W,
   XP_COLLECT_RADIUS, XP_SHARD_SKELETON, XP_SHARD_ZOMBIE, XP_SHARD_KNIGHT, XP_SHARD_GHOST,
   LEVEL_UP_HEAL_FRACTION,
 } from '@/game/config/constants';
@@ -25,6 +25,7 @@ import { Hero, type AttackResult } from '@/game/entities/Hero';
 import { Beacon } from '@/game/entities/Beacon';
 import { Enemy } from '@/game/entities/Enemy';
 import { Projectile } from '@/game/entities/Projectile';
+import { EnemyProjectile } from '@/game/entities/EnemyProjectile';
 import { XPShard } from '@/game/entities/XPShard';
 import { generateBeaconPositions } from '@/game/utils/BeaconPlacement';
 import { distance } from '@/game/utils/MathUtils';
@@ -63,6 +64,9 @@ export class GameScene extends Phaser.Scene {
 
   // [BLOCK: Projectiles]
   private projectiles: Projectile[] = [];
+
+  // [BLOCK: Enemy Projectiles — Phase 4 Chunk B]
+  private enemyProjectiles: EnemyProjectile[] = [];
 
   // [BLOCK: XP Shards]
   private xpShards: XPShard[] = [];
@@ -305,6 +309,41 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
+  // [BLOCK: Update Enemy Projectiles — Phase 4 Chunk B]
+  // Mirrors updateProjectiles but resolves against heroes instead of enemies.
+  // No resistance system on this side (enemy -> hero) — damage applies
+  // directly via Hero.takeDamage (inherited from Unit), which already
+  // reduces physical damage by defense and lets magic bypass it entirely.
+  // Checks against all heroes, not just the projectile's original target —
+  // a hero that steps into a shot's path can still be hit, matching how the
+  // hero-side projectile system already works against enemies.
+  private updateEnemyProjectiles(deltaSeconds: number): void {
+    this.enemyProjectiles.forEach((p) => p.update(deltaSeconds));
+
+    for (const projectile of this.enemyProjectiles) {
+      if (!projectile.alive) continue;
+
+      for (const hero of this.heroes) {
+        if (hero.isDead) continue;
+
+        const hitDistance = HERO_BODY_W / 2 + projectile.radius;
+        if (distance(projectile.x, projectile.y, hero.x, hero.y) <= hitDistance) {
+          hero.takeDamage(projectile.damage, projectile.attackElement === 'physical');
+          projectile.markHit();
+          break;
+        }
+      }
+    }
+
+    this.enemyProjectiles = this.enemyProjectiles.filter((p) => {
+      if (!p.alive) {
+        p.destroy();
+        return false;
+      }
+      return true;
+    });
+  }
+
   // [BLOCK: Apply Aggro Updates]
   private applyAggroUpdates(): void {
     const assignments = this.aggroSystem.update(this.enemies);
@@ -437,7 +476,11 @@ export class GameScene extends Phaser.Scene {
 
     this.applyAggroUpdates();
     this.updateEnemySpawning(deltaSeconds, darknessLevel);
-    this.enemies.forEach((enemy) => enemy.update(deltaSeconds, this.beacons));
+    for (const enemy of this.enemies) {
+      const fired = enemy.update(deltaSeconds, this.beacons);
+      if (fired) this.enemyProjectiles.push(fired);
+    }
+    this.updateEnemyProjectiles(deltaSeconds);
     this.cleanupDeadEnemies();
 
     this.updateXPShards(deltaSeconds);

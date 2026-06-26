@@ -139,3 +139,17 @@ export const RESISTANCE_ROLL_MAGIC = 0.10;
 // [BLOCK: Immunity Feedback (Phase 4)]
 export const IMMUNE_FLASH_DURATION = 100;  // ms — white flash on resisted hit
 export const IMMUNE_TEXT_DURATION = 800;   // ms — "IMMUNE" floating text fade
+
+// [BLOCK: Ranged Enemies — Phase 4 Chunk B]
+// Per-shot hero damage is separate from EnemyConfig.attackDamage, which is
+// the beacon-drain DPS — castle-party-phase4-plan.md Section 4 specifies
+// both values independently for Ranger and Priest.
+export const ENEMY_PROJECTILE_RADIUS = 5;     // px — shared by Ranger/Priest shots
+
+export const RANGER_PROJECTILE_SPEED = 400;   // px/sec
+export const RANGER_ATTACK_INTERVAL = 2.0;    // seconds between Ranger shots
+export const RANGER_HERO_DAMAGE = 12;         // physical damage per shot vs hero
+
+export const PRIEST_PROJECTILE_SPEED = 350;   // px/sec
+export const PRIEST_ATTACK_INTERVAL = 2.5;    // seconds between Priest shots
+export const PRIEST_HERO_DAMAGE = 10;         // magic damage per shot vs hero

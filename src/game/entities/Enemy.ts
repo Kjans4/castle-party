@@ -1,13 +1,17 @@
 // [File: src/game/entities/Enemy.ts]
 // [BLOCK: Enemy Entity — Phase 3 + Phase 4]
 // Movement AI: targets nearest lit beacon, stops at attack range and drains it.
-// Aggro fields exist here but are only mutated once Hero attacks land (Chunk B) —
-// AggroSystem reads/writes aggroState + aggroTarget; this class just acts on them.
+// Aggro fields are mutated once Hero attacks land — AggroSystem reads/writes
+// aggroState + aggroTarget; this class just acts on them.
 //
-// Phase 4 adds: resistance roll/lock at spawn, receiveAttack() as the single
-// entrypoint for incoming damage (resolves resistance before delegating to
-// takeDamage — see castle-party-phase4-plan.md Section 3), and immunity
-// visual feedback (white flash + floating "IMMUNE" text) on resisted hits.
+// Phase 4 Chunk A added: resistance roll/lock at spawn, receiveAttack() as
+// the single entrypoint for incoming damage, and immunity visual feedback.
+//
+// Phase 4 Chunk B adds: Ranger/Priest ranged behavior. When aggroed, these
+// two stop moving and fire EnemyProjectiles at the hero instead of melee-
+// chasing (see pursueHero). Priest's element (fire/ice/electric) is rolled
+// once at spawn and used for both its projectile and body tint, per
+// castle-party-phase4-plan.md Section 4.
 
 import Phaser from 'phaser';
 import { Unit } from './Unit';
@@ -15,6 +19,7 @@ import type { EnemyConfig } from '@/game/config/enemies';
 import type { AttackElement } from '@/game/config/heroes';
 import type { Beacon } from './Beacon';
 import type { Hero } from './Hero';
+import { EnemyProjectile } from './EnemyProjectile';
 import { isResisted, rollResistance, type ActualResistance } from '@/game/utils/CombatUtils';
 import {
   TILE_SIZE,
@@ -24,6 +29,13 @@ import {
   BEACON_LIGHT_RADIUS,
   IMMUNE_FLASH_DURATION,
   IMMUNE_TEXT_DURATION,
+  ENEMY_PROJECTILE_RADIUS,
+  RANGER_PROJECTILE_SPEED,
+  RANGER_ATTACK_INTERVAL,
+  RANGER_HERO_DAMAGE,
+  PRIEST_PROJECTILE_SPEED,
+  PRIEST_ATTACK_INTERVAL,
+  PRIEST_HERO_DAMAGE,
 } from '@/game/config/constants';
 import { distance } from '@/game/utils/MathUtils';
 import { setVelocityToward, stopBody } from '@/game/utils/PhysicsUtils';
@@ -32,12 +44,15 @@ import { setVelocityToward, stopBody } from '@/game/utils/PhysicsUtils';
 export type AggroState = 'beacon' | 'hero';
 
 // [BLOCK: Placeholder Color Lookup]
-// Ghost added for Phase 4 — semi-transparent white per horde.md visual spec.
+// Ghost (Phase 4A) and Ranger (Phase 4B) added. Priest is handled separately
+// below since its color depends on a per-instance element roll, not a static
+// per-id lookup.
 const ENEMY_COLORS: Record<string, number> = {
   skeleton: 0xcccccc,
   zombie: 0x557755,
   knight: 0x885522,
   ghost: 0xffffff,
+  ranger: 0x336633,
 };
 const DEFAULT_ENEMY_COLOR = 0x999999;
 
@@ -46,14 +61,35 @@ const DEFAULT_ENEMY_COLOR = 0x999999;
 // bypasses the normal 0.5 -> 1.0 light-fade-in entirely.
 const GHOST_FIXED_ALPHA = 0.7;
 
+// [BLOCK: Priest Element Roll — Phase 4 Chunk B]
+// "Element assigned at spawn" per Section 4's roll table (33/33/33 — equal
+// odds, unlike the resistance roll's weighted table).
+const PRIEST_ELEMENTS: AttackElement[] = ['fire', 'ice', 'electric'];
+function rollPriestElement(): AttackElement {
+  return PRIEST_ELEMENTS[Math.floor(Math.random() * PRIEST_ELEMENTS.length)];
+}
+
+// Tinted purple per element, per Section 4's visual spec ("red-orange for
+// fire, blue for ice, yellow for electric") — kept in the purple family
+// rather than pure element colors so Priest still reads as one enemy type.
+const PRIEST_ELEMENT_TINTS: Record<string, number> = {
+  fire: 0x99334d,
+  ice: 0x4d3399,
+  electric: 0x998c33,
+};
+
 // [BLOCK: Enemy Class]
 export class Enemy extends Unit {
   readonly config: EnemyConfig;
 
-  // [BLOCK: Resistance — Phase 4]
+  // [BLOCK: Resistance — Phase 4 Chunk A]
   readonly resistance: ActualResistance;
 
-  // [BLOCK: Aggro State — written by AggroSystem / hit reactions (Chunk B)]
+  // [BLOCK: Priest Element — Phase 4 Chunk B]
+  // Only set for Priest; undefined for every other enemy id.
+  readonly priestElement?: AttackElement;
+
+  // [BLOCK: Aggro State — written by AggroSystem / hit reactions]
   aggroState: AggroState = 'beacon';
   aggroTarget: Hero | null = null;
 
@@ -66,11 +102,15 @@ export class Enemy extends Unit {
   private hasEnteredLight: boolean = false;
   private lightFadeElapsed: number = 0;
 
+  // [BLOCK: Ranged Attack Cooldown — Phase 4 Chunk B]
+  private rangedCooldownRemaining: number = 0;
+
   // [BLOCK: Visuals]
   private bodyRect: Phaser.GameObjects.Rectangle;
   private aimIndicator: Phaser.GameObjects.Triangle;
+  private readonly spawnColor: number;
 
-  // [BLOCK: Immunity Feedback — Phase 4]
+  // [BLOCK: Immunity Feedback — Phase 4 Chunk A]
   private flashRemainingMs: number = 0;
   private immuneText?: Phaser.GameObjects.Text;
   private immuneTextElapsedMs: number = IMMUNE_TEXT_DURATION; // starts "expired" (hidden)
@@ -88,15 +128,22 @@ export class Enemy extends Unit {
 
     this.config = config;
 
-    // [BLOCK: Resistance Resolution — Phase 4]
-    // 'random' configs roll now; locked configs (e.g. Ghost's 'physical')
-    // pass straight through — no roll, no override possible.
+    // [BLOCK: Resistance Resolution — Phase 4 Chunk A]
     this.resistance = config.resistance === 'random'
       ? rollResistance()
       : (config.resistance as ActualResistance);
 
+    // [BLOCK: Priest Element Resolution — Phase 4 Chunk B]
+    this.priestElement = config.id === 'priest' ? rollPriestElement() : undefined;
+
     // [BLOCK: Visual Setup]
-    const color = ENEMY_COLORS[config.id] ?? DEFAULT_ENEMY_COLOR;
+    // Priest's color depends on its rolled element; everything else uses the
+    // static per-id lookup. spawnColor is cached so immune-flash restore
+    // doesn't need to re-derive it.
+    const color = config.id === 'priest' && this.priestElement
+      ? PRIEST_ELEMENT_TINTS[this.priestElement]
+      : ENEMY_COLORS[config.id] ?? DEFAULT_ENEMY_COLOR;
+    this.spawnColor = color;
 
     this.bodyRect = scene.add.rectangle(0, 0, ENEMY_BODY_SIZE, ENEMY_BODY_SIZE, color);
 
@@ -120,28 +167,32 @@ export class Enemy extends Unit {
     body.setSize(ENEMY_BODY_SIZE, ENEMY_BODY_SIZE);
   }
 
+  // [BLOCK: Is Ranged Attacker — Phase 4 Chunk B]
+  get isRangedAttacker(): boolean {
+    return this.config.id === 'ranger' || this.config.id === 'priest';
+  }
+
   // [BLOCK: Update]
   // beacons: full roster, used to find nearest lit target and re-target if
-  // the current one goes out. Hero-chase branch exists for Chunk B but is
-  // unreachable until something sets aggroState = 'hero'.
-  update(deltaSeconds: number, beacons: Beacon[]): void {
-    if (this.isDead) return;
+  // the current one goes out. Returns a freshly fired EnemyProjectile this
+  // frame (Ranger/Priest only), or null most frames — GameScene collects
+  // these into its own tracked array.
+  update(deltaSeconds: number, beacons: Beacon[]): EnemyProjectile | null {
+    if (this.isDead) return null;
 
     this.tickStats(deltaSeconds);
     this.updateLightFade(deltaSeconds, beacons);
     this.tickImmuneFeedback(deltaSeconds);
 
     if (this.aggroState === 'hero' && this.aggroTarget) {
-      this.pursueHero(this.aggroTarget, deltaSeconds);
-    } else {
-      this.pursueBeacon(beacons, deltaSeconds);
+      return this.pursueHero(this.aggroTarget, deltaSeconds);
     }
+
+    this.pursueBeacon(beacons, deltaSeconds);
+    return null;
   }
 
   // [BLOCK: Light Fade]
-  // One-way crossing fade: once the enemy enters any lit beacon's light radius,
-  // it fades from 0.5 to 1.0 alpha over ENEMY_SPAWN_FADE_SECONDS and stays there.
-  // Ghost is exempt entirely — it never leaves GHOST_FIXED_ALPHA.
   private updateLightFade(deltaSeconds: number, beacons: Beacon[]): void {
     if (this.config.id === 'ghost') return;
 
@@ -171,8 +222,6 @@ export class Enemy extends Unit {
     }
 
     if (!this.targetBeacon) {
-      // No lit beacons left — should only happen for one frame before the
-      // loss condition fires in GameScene. Just stop moving.
       stopBody(this.body as Phaser.Physics.Arcade.Body);
       this.setIsAttacking(false);
       return;
@@ -187,7 +236,6 @@ export class Enemy extends Unit {
       this.targetBeacon.drain(this.config.attackDamage * deltaSeconds);
 
       if (!this.targetBeacon.isLit) {
-        // Extinguished mid-attack — force a re-target next frame.
         this.targetBeacon = null;
         this.setIsAttacking(false);
       }
@@ -198,10 +246,71 @@ export class Enemy extends Unit {
     this.moveToward(this.targetBeacon.x, this.targetBeacon.y);
   }
 
-  // [BLOCK: Pursue Hero — Chunk B]
-  private pursueHero(hero: Hero, _deltaSeconds: number): void {
+  // [BLOCK: Pursue Hero]
+  // Melee-type enemies (Skeleton, Zombie, Knight, Ghost) chase and close
+  // distance. Ranged enemies (Ranger, Priest) stop where they are and fire
+  // instead — see standAndFire. Per castle-party-phase4-plan.md Section 4:
+  // "If hero moves out of aggro range: resumes toward beacon" is handled by
+  // AggroSystem flipping aggroState back to 'beacon', not here.
+  private pursueHero(hero: Hero, deltaSeconds: number): EnemyProjectile | null {
     this.setIsAttacking(false);
+
+    if (this.isRangedAttacker) {
+      return this.standAndFire(hero, deltaSeconds);
+    }
+
     this.moveToward(hero.x, hero.y);
+    return null;
+  }
+
+  // [BLOCK: Stand And Fire — Phase 4 Chunk B]
+  // Stops moving, faces the hero, ticks its own ranged cooldown, and fires
+  // an EnemyProjectile once the cooldown elapses.
+  private standAndFire(hero: Hero, deltaSeconds: number): EnemyProjectile | null {
+    stopBody(this.body as Phaser.Physics.Arcade.Body);
+
+    const angle = Math.atan2(hero.y - this.y, hero.x - this.x);
+    this.aimIndicator.setRotation(angle + Math.PI / 2);
+
+    this.tickRangedCooldown(deltaSeconds);
+    if (this.rangedCooldownRemaining > 0) return null;
+
+    this.resetRangedCooldown();
+    return this.fireProjectileAt(hero, angle);
+  }
+
+  // [BLOCK: Tick / Reset Ranged Cooldown]
+  private tickRangedCooldown(deltaSeconds: number): void {
+    if (this.rangedCooldownRemaining > 0) {
+      this.rangedCooldownRemaining = Math.max(0, this.rangedCooldownRemaining - deltaSeconds);
+    }
+  }
+
+  private resetRangedCooldown(): void {
+    this.rangedCooldownRemaining = this.config.id === 'priest' ? PRIEST_ATTACK_INTERVAL : RANGER_ATTACK_INTERVAL;
+  }
+
+  // [BLOCK: Fire Projectile At Hero — Phase 4 Chunk B]
+  // Ranger always fires physical; Priest fires whichever element it rolled
+  // at spawn (fire/ice/electric — never the generic 'magic' from its config,
+  // since that field only exists to mark "this enemy uses magic damage").
+  private fireProjectileAt(hero: Hero, angle: number): EnemyProjectile {
+    const isPriest = this.config.id === 'priest';
+
+    const damage = isPriest ? PRIEST_HERO_DAMAGE : RANGER_HERO_DAMAGE;
+    const speed = isPriest ? PRIEST_PROJECTILE_SPEED : RANGER_PROJECTILE_SPEED;
+    const attackElement: AttackElement = isPriest ? (this.priestElement ?? 'magic') : 'physical';
+
+    const projectile = new EnemyProjectile(this.scene, this.x, this.y, {
+      damage,
+      speed,
+      radius: ENEMY_PROJECTILE_RADIUS,
+      attackElement,
+      sourceEnemy: this,
+    });
+    projectile.launch(angle);
+
+    return projectile;
   }
 
   // [BLOCK: Move Toward Point]
@@ -233,7 +342,6 @@ export class Enemy extends Unit {
   }
 
   // [BLOCK: Attack Pulse Visual]
-  // Scale oscillates 1.0–1.05 while actively draining a beacon.
   private setIsAttacking(value: boolean): void {
     if (this.isAttackingBeacon === value) return;
     this.isAttackingBeacon = value;
@@ -249,13 +357,7 @@ export class Enemy extends Unit {
     this.setScale(pulse);
   }
 
-  // [BLOCK: Receive Attack — Phase 4]
-  // Single entrypoint for all incoming damage (melee cone + projectile hits
-  // both route through CombatUtils.applyDamage -> here). Resolves resistance
-  // first; on resist, plays immunity feedback, deals zero damage, and — by
-  // simply returning before calling takeDamage — never flips aggro. That's
-  // exactly the Ghost design intent: physical hits are shrugged off entirely,
-  // magic hits both damage AND flip aggro via takeDamage's existing hook.
+  // [BLOCK: Receive Attack — Phase 4 Chunk A]
   receiveAttack(amount: number, element: AttackElement, attacker?: Hero): number {
     if (this.isDead) return 0;
 
@@ -267,10 +369,9 @@ export class Enemy extends Unit {
     return this.takeDamage(amount, element === 'physical', attacker);
   }
 
-  // [BLOCK: Play Immune Feedback — Phase 4]
-  // White flash on the body rect + floating "IMMUNE" text in grey, per
-  // castle-party-phase4-plan.md Section 7. Reuses a single Text object across
-  // repeated immune hits rather than spawning a new one each time.
+  // [BLOCK: Play Immune Feedback — Phase 4 Chunk A]
+  // Restores to spawnColor (cached at construction) rather than re-deriving
+  // from ENEMY_COLORS, since Priest's color isn't in that static lookup.
   private playImmuneFeedback(): void {
     this.flashRemainingMs = IMMUNE_FLASH_DURATION;
     this.bodyRect.setFillStyle(0xffffff);
@@ -288,13 +389,12 @@ export class Enemy extends Unit {
     this.immuneTextElapsedMs = 0;
   }
 
-  // [BLOCK: Tick Immune Feedback — Phase 4]
+  // [BLOCK: Tick Immune Feedback — Phase 4 Chunk A]
   private tickImmuneFeedback(deltaSeconds: number): void {
     if (this.flashRemainingMs > 0) {
       this.flashRemainingMs = Math.max(0, this.flashRemainingMs - deltaSeconds * 1000);
       if (this.flashRemainingMs <= 0) {
-        const color = ENEMY_COLORS[this.config.id] ?? DEFAULT_ENEMY_COLOR;
-        this.bodyRect.setFillStyle(color);
+        this.bodyRect.setFillStyle(this.spawnColor);
       }
     }
 
@@ -306,12 +406,7 @@ export class Enemy extends Unit {
     }
   }
 
-  // [BLOCK: Take Damage — Chunk B hook]
-  // Overridden so a hit can also flip aggro to the attacking hero.
-  // Only reached via receiveAttack() once resistance has already been
-  // cleared — direct callers bypassing receiveAttack get the same behavior
-  // as before Phase 4 (no resistance check), so existing call sites outside
-  // combat (if any) are unaffected.
+  // [BLOCK: Take Damage]
   takeDamage(amount: number, isPhysical: boolean = true, attacker?: Hero): number {
     const dealt = super.takeDamage(amount, isPhysical);
 
@@ -328,14 +423,10 @@ export class Enemy extends Unit {
     super.die();
     stopBody(this.body as Phaser.Physics.Arcade.Body);
     this.setIsAttacking(false);
-    // TODO Chunk B/C: XP shard spawn + Phaser object destroy handled by GameScene,
-    // since shard creation needs scene-level access this entity doesn't have.
+    // TODO Chunk C: XP shard spawn + Phaser object destroy handled by GameScene.
   }
 
-  // [BLOCK: Destroy — Phase 4]
-  // Cleans up the floating immune-text object, which isn't a child of this
-  // Container (it's added directly to the scene so it can survive position
-  // updates independent of container transforms).
+  // [BLOCK: Destroy — Phase 4 Chunk A]
   destroy(fromScene?: boolean): void {
     this.immuneText?.destroy();
     super.destroy(fromScene);
