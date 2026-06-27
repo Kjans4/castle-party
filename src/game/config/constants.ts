@@ -153,3 +153,8 @@ export const RANGER_HERO_DAMAGE = 12;         // physical damage per shot vs her
 export const PRIEST_PROJECTILE_SPEED = 350;   // px/sec
 export const PRIEST_ATTACK_INTERVAL = 2.5;    // seconds between Priest shots
 export const PRIEST_HERO_DAMAGE = 10;         // magic damage per shot vs hero
+
+// [BLOCK: Hero Death — Phase 4 Chunk C]
+// Placeholder respawn: brief white flash, then instant full-HP respawn at
+// current position. Real respawn timers (45s/30s/10s) are Phase 6.
+export const HERO_DEATH_FLASH_DURATION_SECONDS = 0.3;

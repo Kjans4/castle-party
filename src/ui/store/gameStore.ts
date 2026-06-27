@@ -8,6 +8,11 @@
 //
 // They never talk to each other directly — only through this store.
 // See phase-1-plan.md "How Phaser + Next.js Connect" for architecture diagram.
+//
+// Phase 4 Chunk C adds heroHpPercents + heroDeathFlashIds, mirroring the
+// existing levelUpFlashId pattern: an incrementing per-hero counter the HUD
+// watches to trigger a one-shot flash, rather than a boolean GameScene would
+// have to remember to clear.
 
 import { create } from 'zustand';
 import type { HeroConfig } from '@/game/config/heroes';
@@ -38,6 +43,11 @@ export interface BeaconState {
 // run ends — PostRun.tsx reads this instead of hardcoding "Victory".
 export type RunResult = 'victory' | 'defeat' | null;
 
+// [BLOCK: Default Hero Arrays]
+// Sized off HERO_ROSTER so they stay correct if the active roster changes.
+const DEFAULT_HERO_HP_PERCENTS = HERO_ROSTER.map(() => 100);
+const DEFAULT_HERO_DEATH_FLASH_IDS = HERO_ROSTER.map(() => 0);
+
 // [BLOCK: Store Shape]
 interface GameStore {
   // Squad
@@ -63,6 +73,10 @@ interface GameStore {
   xpThreshold: number;         // XP needed to reach the next level
   levelUpFlashId: number;      // increments on every level-up — HUD watches this to trigger a one-shot flash
 
+  // Hero HP (Phase 4 Chunk C) — indexed to match HERO_ROSTER order
+  heroHpPercents: number[];      // 0–100 per hero, drives portrait HP bars
+  heroDeathFlashIds: number[];   // increments per hero on each death — HUD watches per-index to trigger that portrait's flash
+
   // Actions
   setSquad: (squad: HeroConfig[]) => void;
   setActiveLeader: (index: number) => void;
@@ -75,6 +89,8 @@ interface GameStore {
   setStaminaPercent: (value: number) => void;
   endRun: (result: 'victory' | 'defeat') => void;
   addXP: (amount: number) => void;
+  setHeroHpPercent: (index: number, percent: number) => void;
+  triggerHeroDeathFlash: (index: number) => void;
 }
 
 // [BLOCK: Default Beacon States]
@@ -112,6 +128,10 @@ export const useGameStore = create<GameStore>((set) => ({
   xpThreshold: getXPThresholdForLevel(1),
   levelUpFlashId: 0,
 
+  // Hero HP
+  heroHpPercents: [...DEFAULT_HERO_HP_PERCENTS],
+  heroDeathFlashIds: [...DEFAULT_HERO_DEATH_FLASH_IDS],
+
   // [BLOCK: Actions]
   setSquad: (squad) => set({ squad }),
 
@@ -138,6 +158,8 @@ export const useGameStore = create<GameStore>((set) => ({
       partyLevel: 1,
       xpThreshold: getXPThresholdForLevel(1),
       levelUpFlashId: 0,
+      heroHpPercents: [...DEFAULT_HERO_HP_PERCENTS],
+      heroDeathFlashIds: [...DEFAULT_HERO_DEATH_FLASH_IDS],
     }),
 
   setBeaconState: (index, partial) =>
@@ -183,6 +205,24 @@ export const useGameStore = create<GameStore>((set) => ({
         xpThreshold: threshold,
         levelUpFlashId: leveledUp ? state.levelUpFlashId + 1 : state.levelUpFlashId,
       };
+    }),
+
+  // [BLOCK: Set Hero HP Percent — Phase 4 Chunk C]
+  setHeroHpPercent: (index, percent) =>
+    set((state) => {
+      const updated = [...state.heroHpPercents];
+      updated[index] = Math.min(100, Math.max(0, percent));
+      return { heroHpPercents: updated };
+    }),
+
+  // [BLOCK: Trigger Hero Death Flash — Phase 4 Chunk C]
+  // Bumps just that hero's counter — HeroPortraits watches its own index so
+  // only the dying hero's portrait flashes, not the whole row.
+  triggerHeroDeathFlash: (index) =>
+    set((state) => {
+      const updated = [...state.heroDeathFlashIds];
+      updated[index] = (updated[index] ?? 0) + 1;
+      return { heroDeathFlashIds: updated };
     }),
 }));
 

@@ -6,6 +6,10 @@
 //
 // Phaser-independent stat logic lives in the primitives layer (Stat, ResourcePool).
 // Unit wires those primitives to the Phaser scene lifecycle.
+//
+// Phase 4 Chunk C adds revive() — _isDead/_currentHp are private with no
+// existing way for a subclass to clear death state, which Hero's placeholder
+// instant-respawn needs.
 
 import Phaser from 'phaser';
 import { Stat } from '@/game/primitives/Stat';
@@ -82,6 +86,15 @@ export class Unit extends Phaser.GameObjects.Container {
     if (this._isDead) return;
     this._isDead = true;
     // TODO: trigger AnimationState.setDeath(), drop XP shards, etc.
+  }
+
+  // [BLOCK: Revive — Phase 4 Chunk C]
+  // Clears death state and sets HP directly (not via heal(), which is a
+  // no-op while dead). Used by Hero's placeholder instant-respawn; no other
+  // Unit subclass calls this yet — enemies and bosses don't respawn.
+  revive(hp: number): void {
+    this._isDead = false;
+    this._currentHp = Math.min(this.maxHp, Math.max(0, hp));
   }
 
   // [BLOCK: Add Modifier]

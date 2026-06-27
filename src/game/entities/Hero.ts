@@ -4,6 +4,11 @@
 // Hero decides melee-vs-projectile by its own config.id and handles its own
 // attack cooldown — GameScene decides WHO fires and AT WHAT ANGLE each frame
 // (leader on click, companions mirror that angle unless posted).
+//
+// Phase 4 Chunk C adds placeholder death/respawn: on HP hitting 0 the hero
+// flashes white for HERO_DEATH_FLASH_DURATION_SECONDS, freezes (movement and
+// attacks both no-op while isDead), then instantly revives at full HP in
+// place. Real respawn timers are Phase 6 — this is intentionally crude.
 
 import Phaser from 'phaser';
 import { Unit } from './Unit';
@@ -25,6 +30,7 @@ import {
   PRIESTESS_PROJECTILE_SPEED,
   PROJECTILE_RADIUS_SORCERESS,
   PROJECTILE_RADIUS_PRIESTESS,
+  HERO_DEATH_FLASH_DURATION_SECONDS,
 } from '@/game/config/constants';
 
 // [BLOCK: Attack Result Types]
@@ -69,6 +75,14 @@ export class Hero extends Unit {
   // [BLOCK: Attack Cooldown — Phase 3]
   private attackCooldownRemaining: number = 0;
 
+  // [BLOCK: Death/Respawn — Phase 4 Chunk C]
+  private deathFlashRemaining: number = 0;
+  private spawnColorHex: number;
+  // One-shot flag, set true the instant die() fires this frame. GameScene
+  // reads and clears it via consumeDiedFlag() to drive the HUD death-flash —
+  // kept here rather than on Unit since only Hero needs it.
+  private diedThisFrame: boolean = false;
+
   // [BLOCK: Visuals]
   private bodyRect: Phaser.GameObjects.Rectangle;
   private aimIndicator: Phaser.GameObjects.Triangle;
@@ -110,6 +124,7 @@ export class Hero extends Unit {
 
     // [BLOCK: Visual Setup]
     const color = parseInt(config.color.replace('#', ''), 16);
+    this.spawnColorHex = color;
 
     // Outline rect — slightly larger, white, only visible on leader
     this.outlineRect = scene.add.rectangle(0, 0, HERO_BODY_W + 4, HERO_BODY_H + 4);
@@ -155,12 +170,15 @@ export class Hero extends Unit {
   }
 
   // [BLOCK: Update Leader — WASD + Aim]
+  // No-ops entirely while dead — frozen during the death flash window.
   updateAsLeader(
     cursors: Phaser.Types.Input.Keyboard.CursorKeys,
     wasd: { up: Phaser.Input.Keyboard.Key; down: Phaser.Input.Keyboard.Key; left: Phaser.Input.Keyboard.Key; right: Phaser.Input.Keyboard.Key },
     pointer: Phaser.Input.Pointer,
     camera: Phaser.Cameras.Scene2D.Camera
   ): void {
+    if (this.isDead) return;
+
     const body = this.body as Phaser.Physics.Arcade.Body;
 
     // [BLOCK: WASD Movement]
@@ -198,8 +216,9 @@ export class Hero extends Unit {
   }
 
   // [BLOCK: Update Companion — Follow Leader]
+  // No-ops entirely while dead — frozen during the death flash window.
   updateAsCompanion(leader: Hero): void {
-    if (this.isPosted) return;
+    if (this.isPosted || this.isDead) return;
 
     const body = this.body as Phaser.Physics.Arcade.Body;
     const dx   = leader.x - this.x;
@@ -234,7 +253,7 @@ export class Hero extends Unit {
 
   // [BLOCK: Can Attack]
   get canAttack(): boolean {
-    return this.attackCooldownRemaining <= 0;
+    return !this.isDead && this.attackCooldownRemaining <= 0;
   }
 
   // [BLOCK: Tick Attack Cooldown]
@@ -252,10 +271,10 @@ export class Hero extends Unit {
   }
 
   // [BLOCK: Try Attack]
-  // Returns null if on cooldown. Otherwise resets cooldown and returns either
-  // a melee descriptor (Fencer) or a launched Projectile (Sorceress/Priestess)
-  // for GameScene to resolve. aimAngle is in radians, same convention as the
-  // movement/aim code above (raw atan2, no visual offset).
+  // Returns null if on cooldown or dead. Otherwise resets cooldown and
+  // returns either a melee descriptor (Fencer) or a launched Projectile
+  // (Sorceress/Priestess) for GameScene to resolve. aimAngle is in radians,
+  // same convention as the movement/aim code above (raw atan2, no visual offset).
   tryAttack(scene: Phaser.Scene, aimAngle: number): AttackResult | null {
     if (!this.canAttack) return null;
     this.resetAttackCooldown();
@@ -289,8 +308,52 @@ export class Hero extends Unit {
     return { kind: 'projectile', projectile };
   }
 
+  // [BLOCK: Die — Phase 4 Chunk C]
+  // Overrides Unit.die() to add the placeholder death flash. Velocity/
+  // acceleration are zeroed immediately so a dying hero doesn't keep
+  // coasting during the frozen flash window.
+  die(): void {
+    super.die();
+
+    this.diedThisFrame = true;
+    this.deathFlashRemaining = HERO_DEATH_FLASH_DURATION_SECONDS;
+    this.bodyRect.setFillStyle(0xffffff);
+
+    const body = this.body as Phaser.Physics.Arcade.Body;
+    body.setVelocity(0, 0);
+    body.setAcceleration(0, 0);
+  }
+
+  // [BLOCK: Consume Died Flag — Phase 4 Chunk C]
+  // One-shot read: returns true only on the frame death happened, then
+  // clears itself. GameScene calls this each frame to drive the HUD's
+  // per-portrait death flash without needing its own edge-detection state.
+  consumeDiedFlag(): boolean {
+    const value = this.diedThisFrame;
+    this.diedThisFrame = false;
+    return value;
+  }
+
+  // [BLOCK: Tick Death Flash And Respawn — Phase 4 Chunk C]
+  // Counts down the flash window, then instantly revives at full HP in
+  // place and restores the hero's normal body color.
+  private tickDeathFlashAndRespawn(deltaSeconds: number): void {
+    this.deathFlashRemaining -= deltaSeconds;
+    if (this.deathFlashRemaining <= 0) {
+      this.revive(this.maxHp);
+      this.bodyRect.setFillStyle(this.spawnColorHex);
+    }
+  }
+
   // [BLOCK: Update]
+  // While dead, only the death flash/respawn timer ticks — stats, resource
+  // regen, and attack cooldown are all frozen until revive() fires.
   update(deltaSeconds: number, _leader?: Hero): void {
+    if (this.isDead) {
+      this.tickDeathFlashAndRespawn(deltaSeconds);
+      return;
+    }
+
     this.tickStats(deltaSeconds);
     this.tickAttackCooldown(deltaSeconds);
 

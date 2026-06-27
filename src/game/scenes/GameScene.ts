@@ -488,6 +488,7 @@ export class GameScene extends Phaser.Scene {
     this.checkWinLossConditions(litCount);
 
     this.syncResourceBars();
+    this.syncHeroHp();
   }
 
   // [BLOCK: Check Win/Loss Conditions]
@@ -596,5 +597,21 @@ export class GameScene extends Phaser.Scene {
     const store = useGameStore.getState();
     if (manaCount > 0) store.setManaPercent(manaTotal / manaCount);
     if (staminaCount > 0) store.setStaminaPercent(staminaTotal / staminaCount);
+  }
+
+  // [BLOCK: Sync Hero HP — Phase 4 Chunk C]
+  // Pushes each hero's HP% to the store for the portrait HP bars, and
+  // triggers that hero's death flash on the frame it actually died (one-shot
+  // flag consumed via Hero.consumeDiedFlag(), not derived from isDead, so it
+  // fires exactly once per death rather than every frame while frozen).
+  private syncHeroHp(): void {
+    const store = useGameStore.getState();
+
+    this.heroes.forEach((hero, i) => {
+      store.setHeroHpPercent(i, hero.hpPercent * 100);
+      if (hero.consumeDiedFlag()) {
+        store.triggerHeroDeathFlash(i);
+      }
+    });
   }
 }
