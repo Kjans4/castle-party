@@ -7,6 +7,13 @@
 // CombatUtils.applyDamage() instead of calling enemy.takeDamage() directly,
 // so resistance (and Ghost's physical immunity) resolves before any damage
 // or aggro-flip happens. Everything else is unchanged from Phase 3.
+//
+// Phase 5 Chunk 5A patch: XP_VALUE_BY_ENEMY_ID extended with the three
+// Elemental Morph ids — SpawnSystem can now produce them via Elemental
+// batch windows, so they need an XP payout on death like every other
+// already-supported enemy id. No other GameScene change was needed for
+// Chunk 5A — updateEnemySpawning's request shape (enemyId/x/y) is unchanged,
+// and enemyConfigById already resolves all 13 ENEMY_ROSTER ids generically.
 
 import Phaser from 'phaser';
 import {
@@ -16,6 +23,7 @@ import {
   DARKNESS_OVERLAY_DEPTH,
   ENEMY_BODY_SIZE, COMPANION_ATTACK_RANGE, HERO_MELEE_RANGE, HERO_BODY_W,
   XP_COLLECT_RADIUS, XP_SHARD_SKELETON, XP_SHARD_ZOMBIE, XP_SHARD_KNIGHT, XP_SHARD_GHOST,
+  XP_SHARD_MORPH,
   LEVEL_UP_HEAL_FRACTION,
 } from '@/game/config/constants';
 import { HERO_ROSTER } from '@/game/config/heroes';
@@ -40,11 +48,17 @@ import { useGameStore } from '@/ui/store/gameStore';
 // Maps enemy config id -> XP shard value, per castle-party-phase3-plan.md
 // Section 10's named constants. Ghost added Phase 4 — see constants.ts note,
 // its value wasn't specified in castle-party-phase4-plan.md and is assumed.
+// Fire/Ice/Electric Morph added Phase 5 Chunk 5A, all sharing XP_SHARD_MORPH
+// per castle-party-phase5-plan.md Section 9. Ranger/Priest/Spider/Slime XP
+// land in Chunk 5C alongside their spawn-pool confirmation.
 const XP_VALUE_BY_ENEMY_ID: Record<string, number> = {
   skeleton: XP_SHARD_SKELETON,
   zombie: XP_SHARD_ZOMBIE,
   knight: XP_SHARD_KNIGHT,
   ghost: XP_SHARD_GHOST,
+  'fire-morph': XP_SHARD_MORPH,
+  'ice-morph': XP_SHARD_MORPH,
+  'electric-morph': XP_SHARD_MORPH,
 };
 
 // [BLOCK: Game Scene Class]

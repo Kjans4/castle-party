@@ -62,8 +62,20 @@ export const DARKNESS_OVERLAY_DEPTH = 15;     // above world, below heroes and b
 // [BLOCK: Enemy Spawn]
 export const SPAWN_INTERVAL_MS = 4000;  // base spawn batch every 4s
 export const SPAWN_VARIANCE_MS = 1000;  // ±1s randomized per batch
-export const BATCH_INTERVAL_MS = 120000; // new batch type every 2 minutes
-export const PRE_BATCH_PAUSE_MS = 20000; // 20s pause before new batch
+export const BATCH_INTERVAL_MS = 120000; // legacy ms form — superseded by BATCH_WINDOW_SECONDS below, kept for compat
+export const PRE_BATCH_PAUSE_MS = 20000; // legacy ms form — superseded by PRE_BATCH_PAUSE_SECONDS below, kept for compat
+
+// [BLOCK: Wave Batch System (Phase 5)]
+// See castle-party-phase5-plan.md Section 4 + Section 10.
+export const BATCH_WINDOW_SECONDS = 120;    // 2 minutes per batch window
+export const PRE_BATCH_PAUSE_SECONDS = 20;  // spawning pauses this many seconds before new batch
+
+// [BLOCK: Batch Type Weights (Phase 5)]
+export const BATCH_WEIGHT_UNDEAD = 0.25;
+export const BATCH_WEIGHT_HUMAN = 0.25;
+export const BATCH_WEIGHT_ELEMENTAL = 0.15;
+export const BATCH_WEIGHT_MONSTER = 0.25;
+export const BATCH_WEIGHT_MIXED = 0.10;
 
 // [BLOCK: Spawn Boundary (Phase 3)]
 // Enemies spawn at the outer edge of the current illuminated zone. At full
@@ -125,6 +137,12 @@ export const LEVEL_UP_HEAL_FRACTION = 0.3;    // 30% max HP heal to all heroes o
 export const XP_SHARD_GHOST = 20;             // Phase 4 — value not specified in plan; assumed between
                                                // Zombie (15) and Knight (25) to match Ghost's uncommon rarity. Flag if wrong.
 
+// [BLOCK: XP — New Enemies (Phase 5)]
+// Ranger/Priest/Spider/Slime XP values land in Chunk 5C alongside their
+// spawn-pool confirmation. Morph XP is needed now (Chunk 5A) since Morphs
+// spawn and die starting this chunk.
+export const XP_SHARD_MORPH = 30;   // shared by all three Elemental Morphs
+
 // [BLOCK: Resistance System (Phase 4)]
 // Weighted roll for "random" resistance enemies. Magic is the implicit
 // remainder (50/10/10/10/10/10 sums to 100%) — listed explicitly for parity
@@ -139,6 +157,13 @@ export const RESISTANCE_ROLL_MAGIC = 0.10;
 // [BLOCK: Immunity Feedback (Phase 4)]
 export const IMMUNE_FLASH_DURATION = 100;  // ms — white flash on resisted hit
 export const IMMUNE_TEXT_DURATION = 800;   // ms — "IMMUNE" floating text fade
+
+// [BLOCK: Elemental Morph Visuals (Phase 5)]
+// "Flickering alpha between 0.8 and 1.0" per castle-party-phase5-plan.md
+// Section 5, shared by all three Morphs regardless of element.
+export const MORPH_FLICKER_MIN_ALPHA = 0.8;
+export const MORPH_FLICKER_MAX_ALPHA = 1.0;
+export const MORPH_FLICKER_SPEED = 2.0;   // radians/sec — controls flicker cycle rate
 
 // [BLOCK: Ranged Enemies — Phase 4 Chunk B]
 // Per-shot hero damage is separate from EnemyConfig.attackDamage, which is

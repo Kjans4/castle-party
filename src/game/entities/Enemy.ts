@@ -1,5 +1,5 @@
 // [File: src/game/entities/Enemy.ts]
-// [BLOCK: Enemy Entity — Phase 3 + Phase 4]
+// [BLOCK: Enemy Entity — Phase 3 + Phase 4 + Phase 5 Chunk 5A]
 // Movement AI: targets nearest lit beacon, stops at attack range and drains it.
 // Aggro fields are mutated once Hero attacks land — AggroSystem reads/writes
 // aggroState + aggroTarget; this class just acts on them.
@@ -7,11 +7,19 @@
 // Phase 4 Chunk A added: resistance roll/lock at spawn, receiveAttack() as
 // the single entrypoint for incoming damage, and immunity visual feedback.
 //
-// Phase 4 Chunk B adds: Ranger/Priest ranged behavior. When aggroed, these
+// Phase 4 Chunk B added: Ranger/Priest ranged behavior. When aggroed, these
 // two stop moving and fire EnemyProjectiles at the hero instead of melee-
 // chasing (see pursueHero). Priest's element (fire/ice/electric) is rolled
 // once at spawn and used for both its projectile and body tint, per
 // castle-party-phase4-plan.md Section 4.
+//
+// Phase 5 Chunk 5A adds: Elemental Morph colors (locked resistance already
+// flows through the existing rollResistance/isResisted path unchanged — only
+// new visual work was needed here) and the Morph "flickering alpha between
+// 0.8 and 1.0" visual per castle-party-phase5-plan.md Section 5. The flicker
+// runs only once a Morph has entered its own light-fade-in (hasEnteredLight)
+// — see updateMorphFlicker's note on why it intentionally overrides the
+// fade-in's alpha ramp rather than running alongside it.
 
 import Phaser from 'phaser';
 import { Unit } from './Unit';
@@ -36,6 +44,9 @@ import {
   PRIEST_PROJECTILE_SPEED,
   PRIEST_ATTACK_INTERVAL,
   PRIEST_HERO_DAMAGE,
+  MORPH_FLICKER_MIN_ALPHA,
+  MORPH_FLICKER_MAX_ALPHA,
+  MORPH_FLICKER_SPEED,
 } from '@/game/config/constants';
 import { distance } from '@/game/utils/MathUtils';
 import { setVelocityToward, stopBody } from '@/game/utils/PhysicsUtils';
@@ -44,15 +55,19 @@ import { setVelocityToward, stopBody } from '@/game/utils/PhysicsUtils';
 export type AggroState = 'beacon' | 'hero';
 
 // [BLOCK: Placeholder Color Lookup]
-// Ghost (Phase 4A) and Ranger (Phase 4B) added. Priest is handled separately
-// below since its color depends on a per-instance element roll, not a static
-// per-id lookup.
+// Ghost (Phase 4A), Ranger (Phase 4B), and the three Elemental Morphs
+// (Phase 5A) added. Priest is handled separately below since its color
+// depends on a per-instance element roll, not a static per-id lookup.
+// Morph colors per castle-party-phase5-plan.md Section 5's visual spec.
 const ENEMY_COLORS: Record<string, number> = {
   skeleton: 0xcccccc,
   zombie: 0x557755,
   knight: 0x885522,
   ghost: 0xffffff,
   ranger: 0x336633,
+  'fire-morph': 0xff4400,
+  'ice-morph': 0x44aaff,
+  'electric-morph': 0xffff44,
 };
 const DEFAULT_ENEMY_COLOR = 0x999999;
 
@@ -60,6 +75,9 @@ const DEFAULT_ENEMY_COLOR = 0x999999;
 // times (even in light)" per castle-party-phase4-plan.md Section 4. This
 // bypasses the normal 0.5 -> 1.0 light-fade-in entirely.
 const GHOST_FIXED_ALPHA = 0.7;
+
+// [BLOCK: Elemental Morph Ids — Phase 5 Chunk 5A]
+const MORPH_IDS = ['fire-morph', 'ice-morph', 'electric-morph'];
 
 // [BLOCK: Priest Element Roll — Phase 4 Chunk B]
 // "Element assigned at spawn" per Section 4's roll table (33/33/33 — equal
@@ -101,6 +119,9 @@ export class Enemy extends Unit {
   // [BLOCK: Spawn Light Fade]
   private hasEnteredLight: boolean = false;
   private lightFadeElapsed: number = 0;
+
+  // [BLOCK: Morph Flicker — Phase 5 Chunk 5A]
+  private morphFlickerElapsed: number = 0;
 
   // [BLOCK: Ranged Attack Cooldown — Phase 4 Chunk B]
   private rangedCooldownRemaining: number = 0;
@@ -172,6 +193,11 @@ export class Enemy extends Unit {
     return this.config.id === 'ranger' || this.config.id === 'priest';
   }
 
+  // [BLOCK: Is Elemental Morph — Phase 5 Chunk 5A]
+  get isMorph(): boolean {
+    return MORPH_IDS.includes(this.config.id);
+  }
+
   // [BLOCK: Update]
   // beacons: full roster, used to find nearest lit target and re-target if
   // the current one goes out. Returns a freshly fired EnemyProjectile this
@@ -182,6 +208,7 @@ export class Enemy extends Unit {
 
     this.tickStats(deltaSeconds);
     this.updateLightFade(deltaSeconds, beacons);
+    this.updateMorphFlicker(deltaSeconds);
     this.tickImmuneFeedback(deltaSeconds);
 
     if (this.aggroState === 'hero' && this.aggroTarget) {
@@ -213,6 +240,25 @@ export class Enemy extends Unit {
       this.hasEnteredLight = true;
       this.lightFadeElapsed = 0;
     }
+  }
+
+  // [BLOCK: Morph Flicker — Phase 5 Chunk 5A]
+  // Ambient alpha oscillation between MORPH_FLICKER_MIN_ALPHA and
+  // MORPH_FLICKER_MAX_ALPHA, active only once the Morph has crossed into
+  // light (hasEnteredLight). Note: this intentionally takes over alpha from
+  // updateLightFade the same frame light is entered — Morphs skip the
+  // ordinary 0.5->1.0 fade-in ramp and go straight to flickering, which
+  // reads fine visually (the flicker itself is a much subtler ±0.1 swing)
+  // and keeps this isolated to a single small method rather than threading
+  // a "fade complete" condition through updateLightFade. Flag for revisit
+  // if a visible snap into flicker reads wrong in playtesting.
+  private updateMorphFlicker(deltaSeconds: number): void {
+    if (!this.isMorph || !this.hasEnteredLight) return;
+
+    this.morphFlickerElapsed += deltaSeconds;
+    const t = 0.5 * (1 + Math.sin(this.morphFlickerElapsed * MORPH_FLICKER_SPEED));
+    const alpha = MORPH_FLICKER_MIN_ALPHA + (MORPH_FLICKER_MAX_ALPHA - MORPH_FLICKER_MIN_ALPHA) * t;
+    this.setAlpha(alpha);
   }
 
   // [BLOCK: Pursue Beacon]
@@ -247,11 +293,11 @@ export class Enemy extends Unit {
   }
 
   // [BLOCK: Pursue Hero]
-  // Melee-type enemies (Skeleton, Zombie, Knight, Ghost) chase and close
-  // distance. Ranged enemies (Ranger, Priest) stop where they are and fire
-  // instead — see standAndFire. Per castle-party-phase4-plan.md Section 4:
-  // "If hero moves out of aggro range: resumes toward beacon" is handled by
-  // AggroSystem flipping aggroState back to 'beacon', not here.
+  // Melee-type enemies (Skeleton, Zombie, Knight, Ghost, Morphs) chase and
+  // close distance. Ranged enemies (Ranger, Priest) stop where they are and
+  // fire instead — see standAndFire. Per castle-party-phase4-plan.md
+  // Section 4: "If hero moves out of aggro range: resumes toward beacon" is
+  // handled by AggroSystem flipping aggroState back to 'beacon', not here.
   private pursueHero(hero: Hero, deltaSeconds: number): EnemyProjectile | null {
     this.setIsAttacking(false);
 
@@ -423,7 +469,8 @@ export class Enemy extends Unit {
     super.die();
     stopBody(this.body as Phaser.Physics.Arcade.Body);
     this.setIsAttacking(false);
-    // TODO Chunk C: XP shard spawn + Phaser object destroy handled by GameScene.
+    // TODO Chunk 5B: accept/store killer ref, trigger Mini-unit death spawn
+    // for Spider/Slime — see castle-party-phase5-plan.md Section 7.
   }
 
   // [BLOCK: Destroy — Phase 4 Chunk A]
