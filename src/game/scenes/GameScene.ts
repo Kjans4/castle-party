@@ -11,19 +11,20 @@
 // Phase 5 Chunk 5A patch: XP_VALUE_BY_ENEMY_ID extended with the three
 // Elemental Morph ids.
 //
-// Phase 5 Chunk 5B patch:
-//   - XP_VALUE_BY_ENEMY_ID extended with Spider/Slime (both already
-//     spawnable since 5A's Monster batch pool; closing the XP gap now since
-//     this is the chunk where their death actually matters).
-//   - cleanupDeadEnemies() now spawns 4 Mini units (targeting the parent's
-//     lastKiller) whenever a Spider or Slime dies — see
-//     spawnMiniUnitsIfApplicable().
-//   - applyAggroUpdates() filters Mini units out of the array passed to
-//     AggroSystem, so nothing ever flips their aggroState back to 'beacon'
-//     (the agreed bypass approach over adding a third AggroState value).
-//   - Enemy.update()'s signature grew a third `heroes` param (Minis need it
-//     to retarget if their locked hero dies) — the main update() loop's call
-//     site is updated to pass this.heroes through.
+// Phase 5 Chunk 5B patch: XP_VALUE_BY_ENEMY_ID extended with Spider/Slime;
+// cleanupDeadEnemies() spawns 4 Mini units on Spider/Slime death targeting
+// the parent's lastKiller; applyAggroUpdates() filters Mini units out of
+// AggroSystem's input so their locked aggroState/aggroTarget is never
+// overwritten; Enemy.update() call site passes this.heroes for Mini
+// retargeting.
+//
+// Phase 5 Chunk 5C patch: XP_VALUE_BY_ENEMY_ID extended with Ranger/Priest —
+// this completes the full Phase 5 XP set (all 11 XP-dropping enemy ids out
+// of the 13-enemy roster; the 2 Mini units intentionally drop none). No
+// other GameScene change was needed for 5C — SpawnSystem.ts already
+// confirmed the Human batch pool weights (Knight 40 / Ranger 40 / Priest 20)
+// back in Chunk 5A, and enemyConfigById already resolves all 13 roster ids
+// generically via ENEMY_ROSTER, so spawning itself required no code change.
 
 import Phaser from 'phaser';
 import {
@@ -33,7 +34,7 @@ import {
   DARKNESS_OVERLAY_DEPTH,
   ENEMY_BODY_SIZE, COMPANION_ATTACK_RANGE, HERO_MELEE_RANGE, HERO_BODY_W,
   XP_COLLECT_RADIUS, XP_SHARD_SKELETON, XP_SHARD_ZOMBIE, XP_SHARD_KNIGHT, XP_SHARD_GHOST,
-  XP_SHARD_MORPH, XP_SHARD_SPIDER, XP_SHARD_SLIME,
+  XP_SHARD_MORPH, XP_SHARD_SPIDER, XP_SHARD_SLIME, XP_SHARD_RANGER, XP_SHARD_PRIEST,
   MINI_SPAWN_COUNT,
   LEVEL_UP_HEAL_FRACTION,
 } from '@/game/config/constants';
@@ -59,14 +60,17 @@ import { useGameStore } from '@/ui/store/gameStore';
 // Maps enemy config id -> XP shard value, per castle-party-phase3-plan.md
 // Section 10's named constants. Ghost added Phase 4 — see constants.ts note,
 // its value wasn't specified in castle-party-phase4-plan.md and is assumed.
-// Fire/Ice/Electric Morph added Phase 5 Chunk 5A. Spider/Slime added Phase 5
-// Chunk 5B. Mini Spider/Mini Slime are intentionally absent — no XP per
-// castle-party-phase5-plan.md Section 7. Ranger/Priest XP land in Chunk 5C.
+// Fire/Ice/Electric Morph and Spider/Slime added Phase 5 (5A/5B). Ranger and
+// Priest added Phase 5 Chunk 5C, per Section 9 — this is now the complete
+// Phase 5 XP set. Mini Spider/Mini Slime are intentionally absent — no XP
+// per Section 7.
 const XP_VALUE_BY_ENEMY_ID: Record<string, number> = {
   skeleton: XP_SHARD_SKELETON,
   zombie: XP_SHARD_ZOMBIE,
   knight: XP_SHARD_KNIGHT,
   ghost: XP_SHARD_GHOST,
+  ranger: XP_SHARD_RANGER,
+  priest: XP_SHARD_PRIEST,
   'fire-morph': XP_SHARD_MORPH,
   'ice-morph': XP_SHARD_MORPH,
   'electric-morph': XP_SHARD_MORPH,

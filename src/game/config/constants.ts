@@ -138,17 +138,18 @@ export const XP_SHARD_GHOST = 20;             // Phase 4 — value not specified
                                                // Zombie (15) and Knight (25) to match Ghost's uncommon rarity. Flag if wrong.
 
 // [BLOCK: XP — New Enemies (Phase 5)]
-// Morph XP landed in Chunk 5A (spawns/dies from that chunk onward). Spider
-// and Slime XP added now in Chunk 5B — both were already spawnable via 5A's
-// Monster batch pool, and Chunk 5B is the first point Spider/Slime death
-// actually matters (death-spawn mechanic), so closing the XP gap here
-// rather than letting it sit silent until 5C. Ranger/Priest values are
-// deferred to 5C as planned — they don't die via any new 5B mechanic, so
-// there's no equivalent urgency, though note the same "already spawnable
-// since 5A, XP payout still missing" gap technically applies to them too.
+// Morph XP landed in Chunk 5A. Spider/Slime XP landed in Chunk 5B (closed
+// early since both were already spawnable via 5A's Monster batch pool, and
+// 5B's death-spawn mechanic made the gap urgent). Ranger/Priest XP closes
+// here in Chunk 5C per castle-party-phase5-plan.md Section 9 — this
+// completes the full Phase 5 XP set; XP_VALUE_BY_ENEMY_ID in GameScene.ts
+// now has all 11 XP-dropping enemy ids (13 roster ids minus the 2 Minis,
+// which intentionally drop none per Section 7).
 export const XP_SHARD_MORPH = 30;   // shared by all three Elemental Morphs
 export const XP_SHARD_SPIDER = 20;
 export const XP_SHARD_SLIME = 25;
+export const XP_SHARD_RANGER = 15;  // same as Zombie — fragile but ranged threat
+export const XP_SHARD_PRIEST = 20;  // uncommon — between Zombie and Knight
 
 // [BLOCK: Resistance System (Phase 4)]
 // Weighted roll for "random" resistance enemies. Magic is the implicit
