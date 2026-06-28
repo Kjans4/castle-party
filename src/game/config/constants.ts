@@ -138,10 +138,17 @@ export const XP_SHARD_GHOST = 20;             // Phase 4 — value not specified
                                                // Zombie (15) and Knight (25) to match Ghost's uncommon rarity. Flag if wrong.
 
 // [BLOCK: XP — New Enemies (Phase 5)]
-// Ranger/Priest/Spider/Slime XP values land in Chunk 5C alongside their
-// spawn-pool confirmation. Morph XP is needed now (Chunk 5A) since Morphs
-// spawn and die starting this chunk.
+// Morph XP landed in Chunk 5A (spawns/dies from that chunk onward). Spider
+// and Slime XP added now in Chunk 5B — both were already spawnable via 5A's
+// Monster batch pool, and Chunk 5B is the first point Spider/Slime death
+// actually matters (death-spawn mechanic), so closing the XP gap here
+// rather than letting it sit silent until 5C. Ranger/Priest values are
+// deferred to 5C as planned — they don't die via any new 5B mechanic, so
+// there's no equivalent urgency, though note the same "already spawnable
+// since 5A, XP payout still missing" gap technically applies to them too.
 export const XP_SHARD_MORPH = 30;   // shared by all three Elemental Morphs
+export const XP_SHARD_SPIDER = 20;
+export const XP_SHARD_SLIME = 25;
 
 // [BLOCK: Resistance System (Phase 4)]
 // Weighted roll for "random" resistance enemies. Magic is the implicit
@@ -164,6 +171,14 @@ export const IMMUNE_TEXT_DURATION = 800;   // ms — "IMMUNE" floating text fade
 export const MORPH_FLICKER_MIN_ALPHA = 0.8;
 export const MORPH_FLICKER_MAX_ALPHA = 1.0;
 export const MORPH_FLICKER_SPEED = 2.0;   // radians/sec — controls flicker cycle rate
+
+// [BLOCK: Mini Unit Behavior (Phase 5 Chunk 5B)]
+// Per castle-party-phase5-plan.md Section 10.
+export const MINI_SPAWN_COUNT = 4;    // Minis spawned per parent (Spider/Slime) death
+export const MINI_SPIDER_SPEED = 4.0; // m/s — matches MINI_SPIDER.movementSpeed in enemies.ts
+export const MINI_SLIME_SPEED = 2.5;  // m/s — matches MINI_SLIME.movementSpeed in enemies.ts
+// Mini Spider and Mini Slime: 0 XP — no constant needed (absent from
+// GameScene's XP_VALUE_BY_ENEMY_ID lookup is sufficient, per Section 7).
 
 // [BLOCK: Ranged Enemies — Phase 4 Chunk B]
 // Per-shot hero damage is separate from EnemyConfig.attackDamage, which is

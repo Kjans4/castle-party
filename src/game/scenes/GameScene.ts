@@ -9,11 +9,21 @@
 // or aggro-flip happens. Everything else is unchanged from Phase 3.
 //
 // Phase 5 Chunk 5A patch: XP_VALUE_BY_ENEMY_ID extended with the three
-// Elemental Morph ids — SpawnSystem can now produce them via Elemental
-// batch windows, so they need an XP payout on death like every other
-// already-supported enemy id. No other GameScene change was needed for
-// Chunk 5A — updateEnemySpawning's request shape (enemyId/x/y) is unchanged,
-// and enemyConfigById already resolves all 13 ENEMY_ROSTER ids generically.
+// Elemental Morph ids.
+//
+// Phase 5 Chunk 5B patch:
+//   - XP_VALUE_BY_ENEMY_ID extended with Spider/Slime (both already
+//     spawnable since 5A's Monster batch pool; closing the XP gap now since
+//     this is the chunk where their death actually matters).
+//   - cleanupDeadEnemies() now spawns 4 Mini units (targeting the parent's
+//     lastKiller) whenever a Spider or Slime dies — see
+//     spawnMiniUnitsIfApplicable().
+//   - applyAggroUpdates() filters Mini units out of the array passed to
+//     AggroSystem, so nothing ever flips their aggroState back to 'beacon'
+//     (the agreed bypass approach over adding a third AggroState value).
+//   - Enemy.update()'s signature grew a third `heroes` param (Minis need it
+//     to retarget if their locked hero dies) — the main update() loop's call
+//     site is updated to pass this.heroes through.
 
 import Phaser from 'phaser';
 import {
@@ -23,7 +33,8 @@ import {
   DARKNESS_OVERLAY_DEPTH,
   ENEMY_BODY_SIZE, COMPANION_ATTACK_RANGE, HERO_MELEE_RANGE, HERO_BODY_W,
   XP_COLLECT_RADIUS, XP_SHARD_SKELETON, XP_SHARD_ZOMBIE, XP_SHARD_KNIGHT, XP_SHARD_GHOST,
-  XP_SHARD_MORPH,
+  XP_SHARD_MORPH, XP_SHARD_SPIDER, XP_SHARD_SLIME,
+  MINI_SPAWN_COUNT,
   LEVEL_UP_HEAL_FRACTION,
 } from '@/game/config/constants';
 import { HERO_ROSTER } from '@/game/config/heroes';
@@ -48,9 +59,9 @@ import { useGameStore } from '@/ui/store/gameStore';
 // Maps enemy config id -> XP shard value, per castle-party-phase3-plan.md
 // Section 10's named constants. Ghost added Phase 4 — see constants.ts note,
 // its value wasn't specified in castle-party-phase4-plan.md and is assumed.
-// Fire/Ice/Electric Morph added Phase 5 Chunk 5A, all sharing XP_SHARD_MORPH
-// per castle-party-phase5-plan.md Section 9. Ranger/Priest/Spider/Slime XP
-// land in Chunk 5C alongside their spawn-pool confirmation.
+// Fire/Ice/Electric Morph added Phase 5 Chunk 5A. Spider/Slime added Phase 5
+// Chunk 5B. Mini Spider/Mini Slime are intentionally absent — no XP per
+// castle-party-phase5-plan.md Section 7. Ranger/Priest XP land in Chunk 5C.
 const XP_VALUE_BY_ENEMY_ID: Record<string, number> = {
   skeleton: XP_SHARD_SKELETON,
   zombie: XP_SHARD_ZOMBIE,
@@ -59,6 +70,16 @@ const XP_VALUE_BY_ENEMY_ID: Record<string, number> = {
   'fire-morph': XP_SHARD_MORPH,
   'ice-morph': XP_SHARD_MORPH,
   'electric-morph': XP_SHARD_MORPH,
+  spider: XP_SHARD_SPIDER,
+  slime: XP_SHARD_SLIME,
+};
+
+// [BLOCK: Death Spawn Parent -> Mini Lookup — Phase 5 Chunk 5B]
+// Maps a parent enemy id to the Mini enemy id it spawns 4-of on death.
+// Per castle-party-phase5-plan.md Section 7.
+const DEATH_SPAWN_PARENT_TO_MINI: Record<string, string> = {
+  spider: 'mini-spider',
+  slime: 'mini-slime',
 };
 
 // [BLOCK: Game Scene Class]
@@ -358,27 +379,57 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  // [BLOCK: Apply Aggro Updates]
+  // [BLOCK: Apply Aggro Updates — Phase 5 Chunk 5B patch]
+  // Mini units are filtered out before reaching AggroSystem so it never
+  // overwrites their locked aggroState/aggroTarget — the agreed bypass
+  // approach over adding a third AggroState value just for Minis.
   private applyAggroUpdates(): void {
-    const assignments = this.aggroSystem.update(this.enemies);
+    const aggroEligible = this.enemies.filter((e) => !e.isMiniUnit);
+    const assignments = this.aggroSystem.update(aggroEligible);
     assignments.forEach((a) => {
       a.enemy.aggroState = a.aggroState;
       a.enemy.aggroTarget = a.aggroTarget;
     });
   }
 
-  // [BLOCK: Cleanup Dead Enemies]
+  // [BLOCK: Cleanup Dead Enemies — Phase 5 Chunk 5B patch]
+  // Now spawns Mini units (via spawnMiniUnitsIfApplicable) before the parent
+  // is destroyed, so the parent's x/y/lastKiller are still valid to read.
   private cleanupDeadEnemies(): void {
     const alive: Enemy[] = [];
     for (const enemy of this.enemies) {
       if (enemy.isDead) {
         this.spawnXPShard(enemy.x, enemy.y, enemy.config.id);
+        this.spawnMiniUnitsIfApplicable(enemy);
         enemy.destroy();
       } else {
         alive.push(enemy);
       }
     }
     this.enemies = alive;
+  }
+
+  // [BLOCK: Spawn Mini Units If Applicable — Phase 5 Chunk 5B]
+  // Per castle-party-phase5-plan.md Section 7's kill chain: Spider/Slime
+  // death spawns MINI_SPAWN_COUNT (4) Mini units targeting the killing hero.
+  // Falls back to the current leader if lastKiller is unset (e.g. the
+  // parent died to some non-hero-attributed path) so Minis always have a
+  // valid initial target rather than spawning permanently idle.
+  private spawnMiniUnitsIfApplicable(parent: Enemy): void {
+    const miniId = DEATH_SPAWN_PARENT_TO_MINI[parent.config.id];
+    if (!miniId) return;
+
+    const miniConfig = this.enemyConfigById.get(miniId);
+    if (!miniConfig) return;
+
+    const killer = parent.lastKiller ?? this.heroes[this.leaderIndex];
+
+    for (let i = 0; i < MINI_SPAWN_COUNT; i++) {
+      const mini = new Enemy(this, parent.x, parent.y, miniConfig);
+      mini.aggroState = 'hero';
+      mini.aggroTarget = killer;
+      this.enemies.push(mini);
+    }
   }
 
   // [BLOCK: Spawn XP Shard]
@@ -491,7 +542,7 @@ export class GameScene extends Phaser.Scene {
     this.applyAggroUpdates();
     this.updateEnemySpawning(deltaSeconds, darknessLevel);
     for (const enemy of this.enemies) {
-      const fired = enemy.update(deltaSeconds, this.beacons);
+      const fired = enemy.update(deltaSeconds, this.beacons, this.heroes);
       if (fired) this.enemyProjectiles.push(fired);
     }
     this.updateEnemyProjectiles(deltaSeconds);

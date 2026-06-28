@@ -10,10 +10,21 @@
 // Phase 4 Chunk C adds revive() — _isDead/_currentHp are private with no
 // existing way for a subclass to clear death state, which Hero's placeholder
 // instant-respawn needs.
+//
+// Phase 5 Chunk 5B adds an optional killer parameter to die(), stored as
+// _lastKiller. This is the base of the kill chain described in
+// castle-party-phase5-plan.md Section 7: hero.tryAttack() -> takeDamage() ->
+// die() -> GameScene reads killer via the lastKiller getter to spawn Mini
+// units targeting the right hero. Hero itself never passes a killer (heroes
+// don't kill other heroes), so this is effectively Enemy-only in practice,
+// but lives here since die()/revive() are defined on the shared base class.
+// Hero is imported as a type only — no runtime import, so this doesn't
+// introduce an actual circular dependency between Unit and Hero.
 
 import Phaser from 'phaser';
 import { Stat } from '@/game/primitives/Stat';
 import { Modifier } from '@/game/primitives/Modifier';
+import type { Hero } from './Hero';
 
 export interface UnitConfig {
   scene: Phaser.Scene;
@@ -35,6 +46,9 @@ export class Unit extends Phaser.GameObjects.Container {
   private _currentHp: number;
   private _isDead: boolean = false;
 
+  // [BLOCK: Last Killer — Phase 5 Chunk 5B]
+  private _lastKiller?: Hero;
+
   constructor(config: UnitConfig) {
     super(config.scene, config.x, config.y);
 
@@ -54,6 +68,12 @@ export class Unit extends Phaser.GameObjects.Container {
   get maxHp(): number     { return this.hpStat.getValue(); }
   get hpPercent(): number { return this._currentHp / this.maxHp; }
   get isDead(): boolean   { return this._isDead; }
+
+  // [BLOCK: Last Killer Accessor — Phase 5 Chunk 5B]
+  // Set by die(killer) on the frame death happened; persists after death
+  // (unlike a one-shot flag) since GameScene reads it during the same-frame
+  // cleanupDeadEnemies() pass, which happens after die() already fired.
+  get lastKiller(): Hero | undefined { return this._lastKiller; }
 
   // [BLOCK: Take Damage]
   // Applies incoming damage after defense reduction.
@@ -82,9 +102,15 @@ export class Unit extends Phaser.GameObjects.Container {
 
   // [BLOCK: Die]
   // Override in subclasses to trigger death animations, drops, etc.
-  die(): void {
+  // killer is optional — Unit.takeDamage's internal this.die() call (above)
+  // has no way to know the attacker, so subclasses that need killer
+  // attribution (Enemy) stash it themselves before calling super.takeDamage
+  // and read it back inside their own die() override. See Enemy.ts's
+  // pendingKiller field for that handoff.
+  die(killer?: Hero): void {
     if (this._isDead) return;
     this._isDead = true;
+    this._lastKiller = killer;
     // TODO: trigger AnimationState.setDeath(), drop XP shards, etc.
   }
 
@@ -92,9 +118,12 @@ export class Unit extends Phaser.GameObjects.Container {
   // Clears death state and sets HP directly (not via heal(), which is a
   // no-op while dead). Used by Hero's placeholder instant-respawn; no other
   // Unit subclass calls this yet — enemies and bosses don't respawn.
+  // Also clears _lastKiller so a revived unit doesn't carry a stale killer
+  // reference into its next death.
   revive(hp: number): void {
     this._isDead = false;
     this._currentHp = Math.min(this.maxHp, Math.max(0, hp));
+    this._lastKiller = undefined;
   }
 
   // [BLOCK: Add Modifier]

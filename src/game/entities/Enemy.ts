@@ -1,5 +1,5 @@
 // [File: src/game/entities/Enemy.ts]
-// [BLOCK: Enemy Entity — Phase 3 + Phase 4 + Phase 5 Chunk 5A]
+// [BLOCK: Enemy Entity — Phase 3 + Phase 4 + Phase 5]
 // Movement AI: targets nearest lit beacon, stops at attack range and drains it.
 // Aggro fields are mutated once Hero attacks land — AggroSystem reads/writes
 // aggroState + aggroTarget; this class just acts on them.
@@ -13,13 +13,18 @@
 // once at spawn and used for both its projectile and body tint, per
 // castle-party-phase4-plan.md Section 4.
 //
-// Phase 5 Chunk 5A adds: Elemental Morph colors (locked resistance already
-// flows through the existing rollResistance/isResisted path unchanged — only
-// new visual work was needed here) and the Morph "flickering alpha between
-// 0.8 and 1.0" visual per castle-party-phase5-plan.md Section 5. The flicker
-// runs only once a Morph has entered its own light-fade-in (hasEnteredLight)
-// — see updateMorphFlicker's note on why it intentionally overrides the
-// fade-in's alpha ramp rather than running alongside it.
+// Phase 5 Chunk 5A added: Elemental Morph colors + flickering alpha visual.
+//
+// Phase 5 Chunk 5B adds: killer threading through die() (pendingKiller —
+// stashed in takeDamage() right before calling super.takeDamage(), since
+// Unit.takeDamage's internal HP<=0 check calls this.die() with no args; die()
+// reads pendingKiller back if no explicit killer was passed). Also adds Mini
+// Spider/Mini Slime's "ignore beacons, chase killer forever" behavior via the
+// isMiniUnit bypass — Minis skip pursueBeacon/pursueHero's aggro-state check
+// entirely and always chase their locked aggroTarget, retargeting to the
+// nearest hero if that hero is dead (Section 7). They're also filtered out of
+// AggroSystem entirely on the GameScene side, so nothing ever flips their
+// aggroState back to 'beacon'.
 
 import Phaser from 'phaser';
 import { Unit } from './Unit';
@@ -58,7 +63,6 @@ export type AggroState = 'beacon' | 'hero';
 // Ghost (Phase 4A), Ranger (Phase 4B), and the three Elemental Morphs
 // (Phase 5A) added. Priest is handled separately below since its color
 // depends on a per-instance element roll, not a static per-id lookup.
-// Morph colors per castle-party-phase5-plan.md Section 5's visual spec.
 const ENEMY_COLORS: Record<string, number> = {
   skeleton: 0xcccccc,
   zombie: 0x557755,
@@ -78,6 +82,9 @@ const GHOST_FIXED_ALPHA = 0.7;
 
 // [BLOCK: Elemental Morph Ids — Phase 5 Chunk 5A]
 const MORPH_IDS = ['fire-morph', 'ice-morph', 'electric-morph'];
+
+// [BLOCK: Mini Unit Ids — Phase 5 Chunk 5B]
+const MINI_IDS = ['mini-spider', 'mini-slime'];
 
 // [BLOCK: Priest Element Roll — Phase 4 Chunk B]
 // "Element assigned at spawn" per Section 4's roll table (33/33/33 — equal
@@ -108,6 +115,9 @@ export class Enemy extends Unit {
   readonly priestElement?: AttackElement;
 
   // [BLOCK: Aggro State — written by AggroSystem / hit reactions]
+  // For Mini units this is set once at spawn time by GameScene and never
+  // touched by AggroSystem again (GameScene filters Minis out of the array
+  // it passes to AggroSystem.update()).
   aggroState: AggroState = 'beacon';
   aggroTarget: Hero | null = null;
 
@@ -125,6 +135,12 @@ export class Enemy extends Unit {
 
   // [BLOCK: Ranged Attack Cooldown — Phase 4 Chunk B]
   private rangedCooldownRemaining: number = 0;
+
+  // [BLOCK: Pending Killer — Phase 5 Chunk 5B]
+  // Stashed by takeDamage() right before calling super.takeDamage(), since
+  // Unit.takeDamage's internal HP<=0 branch calls this.die() with no
+  // arguments. die() reads this back if it wasn't given an explicit killer.
+  private pendingKiller?: Hero;
 
   // [BLOCK: Visuals]
   private bodyRect: Phaser.GameObjects.Rectangle;
@@ -198,18 +214,34 @@ export class Enemy extends Unit {
     return MORPH_IDS.includes(this.config.id);
   }
 
+  // [BLOCK: Is Mini Unit — Phase 5 Chunk 5B]
+  get isMiniUnit(): boolean {
+    return MINI_IDS.includes(this.config.id);
+  }
+
   // [BLOCK: Update]
   // beacons: full roster, used to find nearest lit target and re-target if
-  // the current one goes out. Returns a freshly fired EnemyProjectile this
-  // frame (Ranger/Priest only), or null most frames — GameScene collects
-  // these into its own tracked array.
-  update(deltaSeconds: number, beacons: Beacon[]): EnemyProjectile | null {
+  // the current one goes out. heroes: full roster, used only by Mini units
+  // to retarget if their locked target hero has died. Returns a freshly
+  // fired EnemyProjectile this frame (Ranger/Priest only), or null most
+  // frames — GameScene collects these into its own tracked array.
+  update(deltaSeconds: number, beacons: Beacon[], heroes: Hero[]): EnemyProjectile | null {
     if (this.isDead) return null;
 
     this.tickStats(deltaSeconds);
     this.updateLightFade(deltaSeconds, beacons);
     this.updateMorphFlicker(deltaSeconds);
     this.tickImmuneFeedback(deltaSeconds);
+
+    // [BLOCK: Mini Unit Bypass — Phase 5 Chunk 5B]
+    // Minis never evaluate aggroState/beacon logic at all — they always
+    // chase their locked target, full stop. Per Section 7: "ignores all
+    // beacons", "does NOT return to beacon — continues chasing its target
+    // hero indefinitely until killed."
+    if (this.isMiniUnit) {
+      this.pursueMiniTarget(heroes);
+      return null;
+    }
 
     if (this.aggroState === 'hero' && this.aggroTarget) {
       return this.pursueHero(this.aggroTarget, deltaSeconds);
@@ -247,11 +279,7 @@ export class Enemy extends Unit {
   // MORPH_FLICKER_MAX_ALPHA, active only once the Morph has crossed into
   // light (hasEnteredLight). Note: this intentionally takes over alpha from
   // updateLightFade the same frame light is entered — Morphs skip the
-  // ordinary 0.5->1.0 fade-in ramp and go straight to flickering, which
-  // reads fine visually (the flicker itself is a much subtler ±0.1 swing)
-  // and keeps this isolated to a single small method rather than threading
-  // a "fade complete" condition through updateLightFade. Flag for revisit
-  // if a visible snap into flicker reads wrong in playtesting.
+  // ordinary 0.5->1.0 fade-in ramp and go straight to flickering.
   private updateMorphFlicker(deltaSeconds: number): void {
     if (!this.isMorph || !this.hasEnteredLight) return;
 
@@ -259,6 +287,45 @@ export class Enemy extends Unit {
     const t = 0.5 * (1 + Math.sin(this.morphFlickerElapsed * MORPH_FLICKER_SPEED));
     const alpha = MORPH_FLICKER_MIN_ALPHA + (MORPH_FLICKER_MAX_ALPHA - MORPH_FLICKER_MIN_ALPHA) * t;
     this.setAlpha(alpha);
+  }
+
+  // [BLOCK: Pursue Mini Target — Phase 5 Chunk 5B]
+  // Always chases aggroTarget (locked at spawn by GameScene to the hero who
+  // killed this Mini's parent). If that hero is dead, retargets the nearest
+  // living hero per Section 7. Never touches a beacon, never times out.
+  // Note: no contact-damage application happens here — see the file-level
+  // flag below on melee-vs-hero contact damage not existing anywhere yet in
+  // the codebase (this is a pre-existing gap that predates Phase 5, not
+  // something introduced by Minis; flagging rather than silently inventing
+  // a new combat mechanic outside this chunk's scope).
+  private pursueMiniTarget(heroes: Hero[]): void {
+    if (!this.aggroTarget || this.aggroTarget.isDead) {
+      this.aggroTarget = this.findNearestHero(heroes);
+    }
+
+    if (!this.aggroTarget) {
+      stopBody(this.body as Phaser.Physics.Arcade.Body);
+      return;
+    }
+
+    this.moveToward(this.aggroTarget.x, this.aggroTarget.y);
+  }
+
+  // [BLOCK: Find Nearest Hero — Phase 5 Chunk 5B]
+  private findNearestHero(heroes: Hero[]): Hero | null {
+    let nearest: Hero | null = null;
+    let nearestDist = Infinity;
+
+    for (const hero of heroes) {
+      if (hero.isDead) continue;
+      const d = distance(this.x, this.y, hero.x, hero.y);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearest = hero;
+      }
+    }
+
+    return nearest;
   }
 
   // [BLOCK: Pursue Beacon]
@@ -298,6 +365,7 @@ export class Enemy extends Unit {
   // fire instead — see standAndFire. Per castle-party-phase4-plan.md
   // Section 4: "If hero moves out of aggro range: resumes toward beacon" is
   // handled by AggroSystem flipping aggroState back to 'beacon', not here.
+  // (Mini units never reach this method — they're intercepted in update().)
   private pursueHero(hero: Hero, deltaSeconds: number): EnemyProjectile | null {
     this.setIsAttacking(false);
 
@@ -452,9 +520,16 @@ export class Enemy extends Unit {
     }
   }
 
-  // [BLOCK: Take Damage]
+  // [BLOCK: Take Damage — Phase 5 Chunk 5B patch]
+  // Stashes attacker into pendingKiller BEFORE calling super.takeDamage(),
+  // since Unit.takeDamage's internal HP<=0 branch calls this.die() with no
+  // arguments — die() (below) reads pendingKiller back at that point. The
+  // stash is cleared again right after, regardless of whether death
+  // actually occurred this call.
   takeDamage(amount: number, isPhysical: boolean = true, attacker?: Hero): number {
+    this.pendingKiller = attacker;
     const dealt = super.takeDamage(amount, isPhysical);
+    this.pendingKiller = undefined;
 
     if (attacker && !this.isDead) {
       this.aggroState = 'hero';
@@ -464,13 +539,15 @@ export class Enemy extends Unit {
     return dealt;
   }
 
-  // [BLOCK: Die]
-  die(): void {
-    super.die();
+  // [BLOCK: Die — Phase 5 Chunk 5B patch]
+  // killer falls back to pendingKiller when called with no args (i.e. from
+  // Unit.takeDamage's internal death check). GameScene reads lastKiller
+  // (inherited from Unit) in cleanupDeadEnemies() to target Mini units at
+  // whoever landed the kill — see castle-party-phase5-plan.md Section 7.
+  die(killer?: Hero): void {
+    super.die(killer ?? this.pendingKiller);
     stopBody(this.body as Phaser.Physics.Arcade.Body);
     this.setIsAttacking(false);
-    // TODO Chunk 5B: accept/store killer ref, trigger Mini-unit death spawn
-    // for Spider/Slime — see castle-party-phase5-plan.md Section 7.
   }
 
   // [BLOCK: Destroy — Phase 4 Chunk A]
