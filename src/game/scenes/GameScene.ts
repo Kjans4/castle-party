@@ -19,12 +19,25 @@
 // retargeting.
 //
 // Phase 5 Chunk 5C patch: XP_VALUE_BY_ENEMY_ID extended with Ranger/Priest —
-// this completes the full Phase 5 XP set (all 11 XP-dropping enemy ids out
-// of the 13-enemy roster; the 2 Mini units intentionally drop none). No
-// other GameScene change was needed for 5C — SpawnSystem.ts already
-// confirmed the Human batch pool weights (Knight 40 / Ranger 40 / Priest 20)
-// back in Chunk 5A, and enemyConfigById already resolves all 13 roster ids
-// generically via ENEMY_ROSTER, so spawning itself required no code change.
+// this completes the full Phase 5 XP set.
+//
+// Phase 6 Chunk 6A patch: adds the Card Draft System.
+//   - collectXPShard's existing level-up branch now also calls triggerDraft()
+//     alongside the existing healAllHeroes() call.
+//   - triggerDraft() asks DraftSystem for a fresh 5-card draft and pushes it
+//     into the store via openDraft() — this does NOT pause anything in
+//     update(); per castle-party-phase6-plan.md Section 4 the world keeps
+//     ticking while the overlay is up.
+//   - update() polls useGameStore.getState().consumeDraftPick() each frame
+//     (mirrors the existing one-shot-flag pattern used elsewhere, just in
+//     the opposite data-flow direction) and resolves a pending pick via
+//     resolveDraftPick().
+//   - resolveDraftPick() calls DraftSystem.resolveDraft() to get back the
+//     picked UpgradeConfig (or null if a spell was picked), invokes its
+//     effect(this.heroes) if present, syncs DraftSystem's owned/skipped
+//     state back into the store, and closes the draft overlay.
+//   - Spell picks append to activeSpells via the store directly (capped at
+//     3, per the store's addActiveSpell) — casting/effects are Chunk 6B.
 
 import Phaser from 'phaser';
 import {
@@ -53,17 +66,11 @@ import { applyDamage } from '@/game/utils/CombatUtils';
 import { DarknessSystem } from '@/game/systems/DarknessSystem';
 import { SpawnSystem } from '@/game/systems/SpawnSystem';
 import { AggroSystem } from '@/game/systems/AggroSystem';
+import { DraftSystem } from '@/game/systems/DraftSystem';
 import { ENEMY_ROSTER } from '@/game/config/enemies';
 import { useGameStore } from '@/ui/store/gameStore';
 
 // [BLOCK: XP Value Lookup]
-// Maps enemy config id -> XP shard value, per castle-party-phase3-plan.md
-// Section 10's named constants. Ghost added Phase 4 — see constants.ts note,
-// its value wasn't specified in castle-party-phase4-plan.md and is assumed.
-// Fire/Ice/Electric Morph and Spider/Slime added Phase 5 (5A/5B). Ranger and
-// Priest added Phase 5 Chunk 5C, per Section 9 — this is now the complete
-// Phase 5 XP set. Mini Spider/Mini Slime are intentionally absent — no XP
-// per Section 7.
 const XP_VALUE_BY_ENEMY_ID: Record<string, number> = {
   skeleton: XP_SHARD_SKELETON,
   zombie: XP_SHARD_ZOMBIE,
@@ -79,8 +86,6 @@ const XP_VALUE_BY_ENEMY_ID: Record<string, number> = {
 };
 
 // [BLOCK: Death Spawn Parent -> Mini Lookup — Phase 5 Chunk 5B]
-// Maps a parent enemy id to the Mini enemy id it spawns 4-of on death.
-// Per castle-party-phase5-plan.md Section 7.
 const DEATH_SPAWN_PARENT_TO_MINI: Record<string, string> = {
   spider: 'mini-spider',
   slime: 'mini-slime',
@@ -100,6 +105,9 @@ export class GameScene extends Phaser.Scene {
   private spawnSystem: SpawnSystem = new SpawnSystem();
   private aggroSystem: AggroSystem = new AggroSystem();
   private enemyConfigById = new Map(ENEMY_ROSTER.map((cfg) => [cfg.id, cfg]));
+
+  // [BLOCK: Draft — Phase 6 Chunk 6A]
+  private draftSystem: DraftSystem = new DraftSystem();
 
   // [BLOCK: Projectiles]
   private projectiles: Projectile[] = [];
@@ -277,9 +285,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Apply Melee Hit]
-  // Phase 4: routes through CombatUtils.applyDamage with element 'physical'
-  // (Fencer's Slice is always physical per characters.md) instead of calling
-  // enemy.takeDamage() directly — resistance resolves before damage/aggro.
   private applyMeleeHit(result: Extract<AttackResult, { kind: 'melee' }>): void {
     const halfConeRad = (result.coneAngleDeg / 2) * (Math.PI / 180);
 
@@ -317,10 +322,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Update Projectiles]
-  // Phase 4: routes through CombatUtils.applyDamage using the projectile's
-  // actual attackElement (fire/ice/electric/magic) instead of just its
-  // isPhysical flag — resistance needs the specific element to check magic
-  // resistance correctly; isPhysical alone can't distinguish fire from ice.
   private updateProjectiles(deltaSeconds: number): void {
     this.projectiles.forEach((p) => p.update(deltaSeconds));
 
@@ -349,13 +350,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Update Enemy Projectiles — Phase 4 Chunk B]
-  // Mirrors updateProjectiles but resolves against heroes instead of enemies.
-  // No resistance system on this side (enemy -> hero) — damage applies
-  // directly via Hero.takeDamage (inherited from Unit), which already
-  // reduces physical damage by defense and lets magic bypass it entirely.
-  // Checks against all heroes, not just the projectile's original target —
-  // a hero that steps into a shot's path can still be hit, matching how the
-  // hero-side projectile system already works against enemies.
   private updateEnemyProjectiles(deltaSeconds: number): void {
     this.enemyProjectiles.forEach((p) => p.update(deltaSeconds));
 
@@ -384,9 +378,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Apply Aggro Updates — Phase 5 Chunk 5B patch]
-  // Mini units are filtered out before reaching AggroSystem so it never
-  // overwrites their locked aggroState/aggroTarget — the agreed bypass
-  // approach over adding a third AggroState value just for Minis.
   private applyAggroUpdates(): void {
     const aggroEligible = this.enemies.filter((e) => !e.isMiniUnit);
     const assignments = this.aggroSystem.update(aggroEligible);
@@ -397,8 +388,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Cleanup Dead Enemies — Phase 5 Chunk 5B patch]
-  // Now spawns Mini units (via spawnMiniUnitsIfApplicable) before the parent
-  // is destroyed, so the parent's x/y/lastKiller are still valid to read.
   private cleanupDeadEnemies(): void {
     const alive: Enemy[] = [];
     for (const enemy of this.enemies) {
@@ -414,11 +403,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Spawn Mini Units If Applicable — Phase 5 Chunk 5B]
-  // Per castle-party-phase5-plan.md Section 7's kill chain: Spider/Slime
-  // death spawns MINI_SPAWN_COUNT (4) Mini units targeting the killing hero.
-  // Falls back to the current leader if lastKiller is unset (e.g. the
-  // parent died to some non-hero-attributed path) so Minis always have a
-  // valid initial target rather than spawning permanently idle.
   private spawnMiniUnitsIfApplicable(parent: Enemy): void {
     const miniId = DEATH_SPAWN_PARENT_TO_MINI[parent.config.id];
     if (!miniId) return;
@@ -463,6 +447,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Collect XP Shard]
+  // Phase 6 Chunk 6A: on level-up, also triggers a card draft alongside the
+  // existing heal-all-heroes action — per castle-party-phase6-plan.md
+  // Section 4's "Phase 6 adds a third action: set isDraftPending: true."
   private collectXPShard(shard: XPShard): void {
     const store = useGameStore.getState();
     const levelBefore = store.partyLevel;
@@ -471,6 +458,7 @@ export class GameScene extends Phaser.Scene {
 
     if (useGameStore.getState().partyLevel > levelBefore) {
       this.healAllHeroes(LEVEL_UP_HEAL_FRACTION);
+      this.triggerDraft();
     }
 
     shard.destroy();
@@ -479,6 +467,59 @@ export class GameScene extends Phaser.Scene {
   // [BLOCK: Heal All Heroes]
   private healAllHeroes(fraction: number): void {
     this.heroes.forEach((hero) => hero.heal(hero.maxHp * fraction));
+  }
+
+  // [BLOCK: Trigger Draft — Phase 6 Chunk 6A]
+  // Generates a fresh 5-card draft from DraftSystem and pushes it to the
+  // store. Deliberately does NOT set any "paused" flag — update() below
+  // keeps running enemy spawning, movement, and combat exactly as before;
+  // only the HUD overlay's visibility changes. If a draft is somehow
+  // already pending (e.g. two level-ups landed the same frame from a big
+  // XP dump), this simply overwrites it with a fresh draft — the prior
+  // draft's cards are lost rather than queued, since queuing multiple
+  // drafts isn't described anywhere in the plan and the existing XP-dump
+  // edge case (addXP's overflow-carry while-loop) already makes
+  // multi-level-up-per-shard a real possibility worth flagging here rather
+  // than silently mishandling.
+  private triggerDraft(): void {
+    const cards = this.draftSystem.generateDraft();
+    useGameStore.getState().openDraft(cards);
+  }
+
+  // [BLOCK: Resolve Draft Pick — Phase 6 Chunk 6A]
+  // Called from update() once a pending pick is consumed from the store.
+  // Applies the picked upgrade's effect against the live Hero[] roster (or,
+  // for a spell pick, appends to activeSpells), syncs DraftSystem's owned/
+  // skipped state back into the store, and closes the overlay.
+  private resolveDraftPick(pickedIndex: number): void {
+    const store = useGameStore.getState();
+    const cards = store.draftCards;
+
+    if (pickedIndex < 0 || pickedIndex >= cards.length) {
+      store.closeDraft();
+      return;
+    }
+
+    const pickedCard = cards[pickedIndex];
+
+    if (pickedCard.kind === 'spell') {
+      store.addActiveSpell(pickedCard.spell.id);
+      // Spells have no expiry/ownership tracking — still need to register
+      // skips for every OTHER card in this draft so upgrade skip-counts
+      // advance correctly even when the player picked a spell instead.
+      cards.forEach((card, i) => {
+        if (i !== pickedIndex) this.draftSystem.resolveSkip(card);
+      });
+    } else {
+      const pickedUpgrade = this.draftSystem.resolveDraft(cards, pickedIndex);
+      if (pickedUpgrade) {
+        pickedUpgrade.effect(this.heroes);
+      }
+    }
+
+    useGameStore.getState().setOwnedUpgrades(this.draftSystem.ownedUpgrades);
+    useGameStore.getState().setSkippedCounts(this.draftSystem.getSkippedCounts());
+    useGameStore.getState().closeDraft();
   }
 
   // [BLOCK: World Background]
@@ -515,6 +556,16 @@ export class GameScene extends Phaser.Scene {
     }
 
     useGameStore.getState().tickTimer(deltaSeconds);
+
+    // [BLOCK: Draft Pick Polling — Phase 6 Chunk 6A]
+    // One-shot consume, same pattern as Hero.consumeDiedFlag() but in the
+    // React -> Phaser direction. Runs every frame regardless of whether a
+    // draft is currently pending — consumeDraftPick() is a no-op (returns
+    // null) when there's nothing to resolve.
+    const pendingPick = useGameStore.getState().consumeDraftPick();
+    if (pendingPick !== null) {
+      this.resolveDraftPick(pendingPick);
+    }
 
     if (Phaser.Input.Keyboard.JustDown(this.keys1)) this.setLeader(0);
     if (Phaser.Input.Keyboard.JustDown(this.keys2)) this.setLeader(1);
@@ -669,10 +720,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Sync Hero HP — Phase 4 Chunk C]
-  // Pushes each hero's HP% to the store for the portrait HP bars, and
-  // triggers that hero's death flash on the frame it actually died (one-shot
-  // flag consumed via Hero.consumeDiedFlag(), not derived from isDead, so it
-  // fires exactly once per death rather than every frame while frozen).
   private syncHeroHp(): void {
     const store = useGameStore.getState();
 

@@ -8,7 +8,15 @@
 // Phase 4 Chunk C adds placeholder death/respawn: on HP hitting 0 the hero
 // flashes white for HERO_DEATH_FLASH_DURATION_SECONDS, freezes (movement and
 // attacks both no-op while isDead), then instantly revives at full HP in
-// place. Real respawn timers are Phase 6 — this is intentionally crude.
+// place. Real respawn timers are Phase 6 Chunk 6C — this is intentionally crude.
+//
+// Phase 6 Chunk 6A adds projectileCountStat: a Stat (default
+// PROJECTILE_COUNT_BASE = 1) that the Multishot upgrade line modifies via a
+// flat Modifier. NOTE: this chunk only adds the Stat so Multishot's effect()
+// has something real to write to — tryAttack() does NOT yet read this value
+// to fire multiple projectiles. That firing-logic change (looping +
+// per-shot spread angle for Sorceress/Priestess) is Chunk 6B scope per the
+// agreed plan, alongside the rest of the Q/E skill + attack-cost rewrite.
 
 import Phaser from 'phaser';
 import { Unit } from './Unit';
@@ -31,6 +39,7 @@ import {
   PROJECTILE_RADIUS_SORCERESS,
   PROJECTILE_RADIUS_PRIESTESS,
   HERO_DEATH_FLASH_DURATION_SECONDS,
+  PROJECTILE_COUNT_BASE,
 } from '@/game/config/constants';
 
 // [BLOCK: Attack Result Types]
@@ -67,6 +76,12 @@ export class Hero extends Unit {
   // [BLOCK: Extended Stats]
   readonly attackDamageStat: Stat;
   readonly attackSpeedStat: Stat;
+
+  // [BLOCK: Projectile Count Stat — Phase 6 Chunk 6A]
+  // Default 1 for every hero (Fencer included, even though it's melee and
+  // never reads this value). Multishot upgrades apply a flat Modifier here.
+  // Not yet consumed by tryAttack() — see file-header note.
+  readonly projectileCountStat: Stat;
 
   // [BLOCK: Resource Pools]
   manaPool?: ResourcePool;
@@ -107,6 +122,7 @@ export class Hero extends Unit {
 
     this.attackDamageStat = new Stat({ baseValue: config.attackDamage, min: 0, label: 'attackDamage' });
     this.attackSpeedStat  = new Stat({ baseValue: config.attackSpeed,  min: 0, label: 'attackSpeed' });
+    this.projectileCountStat = new Stat({ baseValue: PROJECTILE_COUNT_BASE, min: 1, label: 'projectileCount' });
 
     // [BLOCK: Resource Pool Init]
     if (config.resource === 'mana' || config.resource === 'hybrid') {
@@ -275,6 +291,11 @@ export class Hero extends Unit {
   // returns either a melee descriptor (Fencer) or a launched Projectile
   // (Sorceress/Priestess) for GameScene to resolve. aimAngle is in radians,
   // same convention as the movement/aim code above (raw atan2, no visual offset).
+  //
+  // NOTE (Phase 6 Chunk 6A): still fires exactly one projectile regardless
+  // of projectileCountStat's value — Multishot's actual firing behavior
+  // (looping + spread angles) is Chunk 6B scope. The Stat is real and
+  // upgradeable now; this method just doesn't read it yet.
   tryAttack(scene: Phaser.Scene, aimAngle: number): AttackResult | null {
     if (!this.canAttack) return null;
     this.resetAttackCooldown();
@@ -355,6 +376,7 @@ export class Hero extends Unit {
     }
 
     this.tickStats(deltaSeconds);
+    this.projectileCountStat.tick(deltaSeconds);
     this.tickAttackCooldown(deltaSeconds);
 
     // Resource regen

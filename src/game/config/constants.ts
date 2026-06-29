@@ -138,13 +138,6 @@ export const XP_SHARD_GHOST = 20;             // Phase 4 — value not specified
                                                // Zombie (15) and Knight (25) to match Ghost's uncommon rarity. Flag if wrong.
 
 // [BLOCK: XP — New Enemies (Phase 5)]
-// Morph XP landed in Chunk 5A. Spider/Slime XP landed in Chunk 5B (closed
-// early since both were already spawnable via 5A's Monster batch pool, and
-// 5B's death-spawn mechanic made the gap urgent). Ranger/Priest XP closes
-// here in Chunk 5C per castle-party-phase5-plan.md Section 9 — this
-// completes the full Phase 5 XP set; XP_VALUE_BY_ENEMY_ID in GameScene.ts
-// now has all 11 XP-dropping enemy ids (13 roster ids minus the 2 Minis,
-// which intentionally drop none per Section 7).
 export const XP_SHARD_MORPH = 30;   // shared by all three Elemental Morphs
 export const XP_SHARD_SPIDER = 20;
 export const XP_SHARD_SLIME = 25;
@@ -152,9 +145,6 @@ export const XP_SHARD_RANGER = 15;  // same as Zombie — fragile but ranged thr
 export const XP_SHARD_PRIEST = 20;  // uncommon — between Zombie and Knight
 
 // [BLOCK: Resistance System (Phase 4)]
-// Weighted roll for "random" resistance enemies. Magic is the implicit
-// remainder (50/10/10/10/10/10 sums to 100%) — listed explicitly for parity
-// with castle-party-phase4-plan.md Section 3's table.
 export const RESISTANCE_ROLL_NONE = 0.50;
 export const RESISTANCE_ROLL_PHYSICAL = 0.10;
 export const RESISTANCE_ROLL_FIRE = 0.10;
@@ -167,24 +157,16 @@ export const IMMUNE_FLASH_DURATION = 100;  // ms — white flash on resisted hit
 export const IMMUNE_TEXT_DURATION = 800;   // ms — "IMMUNE" floating text fade
 
 // [BLOCK: Elemental Morph Visuals (Phase 5)]
-// "Flickering alpha between 0.8 and 1.0" per castle-party-phase5-plan.md
-// Section 5, shared by all three Morphs regardless of element.
 export const MORPH_FLICKER_MIN_ALPHA = 0.8;
 export const MORPH_FLICKER_MAX_ALPHA = 1.0;
 export const MORPH_FLICKER_SPEED = 2.0;   // radians/sec — controls flicker cycle rate
 
 // [BLOCK: Mini Unit Behavior (Phase 5 Chunk 5B)]
-// Per castle-party-phase5-plan.md Section 10.
 export const MINI_SPAWN_COUNT = 4;    // Minis spawned per parent (Spider/Slime) death
 export const MINI_SPIDER_SPEED = 4.0; // m/s — matches MINI_SPIDER.movementSpeed in enemies.ts
 export const MINI_SLIME_SPEED = 2.5;  // m/s — matches MINI_SLIME.movementSpeed in enemies.ts
-// Mini Spider and Mini Slime: 0 XP — no constant needed (absent from
-// GameScene's XP_VALUE_BY_ENEMY_ID lookup is sufficient, per Section 7).
 
 // [BLOCK: Ranged Enemies — Phase 4 Chunk B]
-// Per-shot hero damage is separate from EnemyConfig.attackDamage, which is
-// the beacon-drain DPS — castle-party-phase4-plan.md Section 4 specifies
-// both values independently for Ranger and Priest.
 export const ENEMY_PROJECTILE_RADIUS = 5;     // px — shared by Ranger/Priest shots
 
 export const RANGER_PROJECTILE_SPEED = 400;   // px/sec
@@ -197,5 +179,22 @@ export const PRIEST_HERO_DAMAGE = 10;         // magic damage per shot vs hero
 
 // [BLOCK: Hero Death — Phase 4 Chunk C]
 // Placeholder respawn: brief white flash, then instant full-HP respawn at
-// current position. Real respawn timers (45s/30s/10s) are Phase 6.
+// current position. Real respawn timers (45s/30s/10s) are Phase 6 Chunk 6C.
 export const HERO_DEATH_FLASH_DURATION_SECONDS = 0.3;
+
+// [BLOCK: Card Draft System (Phase 6 Chunk 6A)]
+// See castle-party-phase6-plan.md Section 4 + Section 10.
+export const DRAFT_CARD_COUNT = 5;          // cards shown per draft
+export const DRAFT_RARITY_COMMON = 0.60;    // common card draw weight
+export const DRAFT_RARITY_RARE = 0.30;      // rare card draw weight
+export const DRAFT_RARITY_LEGENDARY = 0.10; // legendary card draw weight
+export const DRAFT_SPELL_RATE = 0.15;       // probability a slot is a spell card
+export const DRAFT_SKIP_EXPIRY = 3;         // skipped this many times = removed from pool
+export const DRAFT_LAST_CHANCE_THRESHOLD = 2; // skipped this many times = show "Last Chance" label
+
+// [BLOCK: Multishot — Phase 6 Chunk 6A]
+// projectileCountStat default for all heroes. Only Sorceress/Priestess fire
+// extra projectiles per the Multishot effect — Fencer is melee and
+// unaffected, but the Stat exists on every Hero uniformly (simpler than a
+// per-hero-type field) and is just never read for Fencer's attack path.
+export const PROJECTILE_COUNT_BASE = 1;

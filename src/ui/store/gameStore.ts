@@ -13,11 +13,21 @@
 // existing levelUpFlashId pattern: an incrementing per-hero counter the HUD
 // watches to trigger a one-shot flash, rather than a boolean GameScene would
 // have to remember to clear.
+//
+// Phase 6 Chunk 6A adds draft state: isDraftPending, draftCards,
+// ownedUpgrades, skippedCounts, activeSpells. GameScene's DraftSystem is the
+// source of truth for eligibility/skip-tracking logic — this store just
+// mirrors DraftSystem's state each time it changes so DraftOverlay.tsx can
+// render without reaching into Phaser. The "the run does not pause enemy
+// spawning during selection" rule (castle-party-phase6-plan.md Section 4) is
+// satisfied simply by isDraftPending NOT being read anywhere in GameScene's
+// update() loop — it's purely a HUD-overlay-visibility flag.
 
 import { create } from 'zustand';
 import type { HeroConfig } from '@/game/config/heroes';
 import { HERO_ROSTER } from '@/game/config/heroes';
 import { RUN_DURATION_SECONDS, BEACON_COUNT, XP_THRESHOLDS } from '@/game/config/constants';
+import type { DraftCard } from '@/game/systems/DraftSystem';
 
 // [BLOCK: XP Threshold Helper]
 // currentLevel is the level the party is AT (about to level up to currentLevel+1).
@@ -77,6 +87,26 @@ interface GameStore {
   heroHpPercents: number[];      // 0–100 per hero, drives portrait HP bars
   heroDeathFlashIds: number[];   // increments per hero on each death — HUD watches per-index to trigger that portrait's flash
 
+  // [BLOCK: Card Draft State — Phase 6 Chunk 6A]
+  isDraftPending: boolean;        // true = show draft overlay (does NOT pause GameScene's update loop)
+  draftCards: DraftCard[];        // current draft's cards — empty array when no draft is showing
+  ownedUpgrades: string[];        // ids of owned upgrades this run — mirrors DraftSystem.ownedUpgrades
+  skippedCounts: Record<string, number>; // skip count per upgrade id — mirrors DraftSystem.getSkippedCounts()
+  activeSpells: string[];         // up to 3 spell ids held this run — capacity/discard UI is Chunk 6B scope;
+                                   // Chunk 6A just appends (capped at 3) and silently drops a 4th pick rather
+                                   // than implementing the discard-selection prompt described in Section 6,
+                                   // since spell casting itself doesn't exist yet either.
+
+  // [BLOCK: Draft Pick Signal — Phase 6 Chunk 6A]
+  // React has no direct reference to the live GameScene instance, and there
+  // is no existing precedent in this codebase for React calling INTO
+  // Phaser (only the reverse). Rather than thread a Phaser scene reference
+  // through page.tsx, this mirrors the existing one-shot-flag pattern
+  // already used for heroDeathFlashIds/consumeDiedFlag: React sets a
+  // pending value, GameScene.update() polls it once per frame and clears it
+  // after resolving — same shape, opposite direction.
+  pendingDraftPickIndex: number | null;
+
   // Actions
   setSquad: (squad: HeroConfig[]) => void;
   setActiveLeader: (index: number) => void;
@@ -91,6 +121,15 @@ interface GameStore {
   addXP: (amount: number) => void;
   setHeroHpPercent: (index: number, percent: number) => void;
   triggerHeroDeathFlash: (index: number) => void;
+
+  // [BLOCK: Draft Actions — Phase 6 Chunk 6A]
+  openDraft: (cards: DraftCard[]) => void;
+  closeDraft: () => void;
+  setOwnedUpgrades: (ids: string[]) => void;
+  setSkippedCounts: (counts: Record<string, number>) => void;
+  addActiveSpell: (spellId: string) => void;
+  submitDraftPick: (index: number) => void;
+  consumeDraftPick: () => number | null;
 }
 
 // [BLOCK: Default Beacon States]
@@ -105,8 +144,10 @@ const DEFAULT_BEACON_STATES: BeaconState[] = [
   { id: 'beacon-of-warding', name: 'Beacon of Warding', isLit: true, fireMeter: 100 },
 ];
 
+const MAX_ACTIVE_SPELLS = 3;
+
 // [BLOCK: Store Definition]
-export const useGameStore = create<GameStore>((set) => ({
+export const useGameStore = create<GameStore>((set, get) => ({
   // Squad defaults to the full prototype roster (all 3 heroes).
   squad: HERO_ROSTER,
   activeLeaderIndex: 0,
@@ -131,6 +172,13 @@ export const useGameStore = create<GameStore>((set) => ({
   // Hero HP
   heroHpPercents: [...DEFAULT_HERO_HP_PERCENTS],
   heroDeathFlashIds: [...DEFAULT_HERO_DEATH_FLASH_IDS],
+
+  isDraftPending: false,
+  draftCards: [],
+  ownedUpgrades: [],
+  skippedCounts: {},
+  activeSpells: [],
+  pendingDraftPickIndex: null,
 
   // [BLOCK: Actions]
   setSquad: (squad) => set({ squad }),
@@ -160,6 +208,12 @@ export const useGameStore = create<GameStore>((set) => ({
       levelUpFlashId: 0,
       heroHpPercents: [...DEFAULT_HERO_HP_PERCENTS],
       heroDeathFlashIds: [...DEFAULT_HERO_DEATH_FLASH_IDS],
+      isDraftPending: false,
+      draftCards: [],
+      ownedUpgrades: [],
+      skippedCounts: {},
+      activeSpells: [],
+      pendingDraftPickIndex: null,
     }),
 
   setBeaconState: (index, partial) =>
@@ -224,6 +278,63 @@ export const useGameStore = create<GameStore>((set) => ({
       updated[index] = (updated[index] ?? 0) + 1;
       return { heroDeathFlashIds: updated };
     }),
+
+  // [BLOCK: Open Draft — Phase 6 Chunk 6A]
+  // GameScene calls this on level-up with DraftSystem.generateDraft()'s
+  // output. Does not touch isRunActive/timer — the run keeps ticking.
+  openDraft: (cards) => set({ isDraftPending: true, draftCards: cards }),
+
+  // [BLOCK: Close Draft — Phase 6 Chunk 6A]
+  // Called after GameScene resolves the pick (or a draft timeout, if ever
+  // added) — clears the overlay and the card list.
+  closeDraft: () => set({ isDraftPending: false, draftCards: [] }),
+
+  // [BLOCK: Set Owned Upgrades — Phase 6 Chunk 6A]
+  // Mirrors DraftSystem.ownedUpgrades after every pick so DraftOverlay can
+  // show ownership-derived UI (e.g. evolution tier badges) without reaching
+  // into Phaser directly.
+  setOwnedUpgrades: (ids) => set({ ownedUpgrades: ids }),
+
+  // [BLOCK: Set Skipped Counts — Phase 6 Chunk 6A]
+  setSkippedCounts: (counts) => set({ skippedCounts: counts }),
+
+  // [BLOCK: Add Active Spell — Phase 6 Chunk 6A]
+  // Caps at MAX_ACTIVE_SPELLS by silently ignoring a 4th pick — the discard-
+  // selection prompt described in castle-party-phase6-plan.md Section 6 is
+  // explicitly deferred to Chunk 6B (alongside spell casting itself, which
+  // has no consumer for activeSpells yet in this chunk).
+  addActiveSpell: (spellId) =>
+    set((state) => {
+      if (state.activeSpells.length >= MAX_ACTIVE_SPELLS) return state;
+      return { activeSpells: [...state.activeSpells, spellId] };
+    }),
+
+  // [BLOCK: Submit Draft Pick — Phase 6 Chunk 6A]
+  // Called by DraftOverlay.tsx on card click. GameScene.update() polls
+  // pendingDraftPickIndex each frame and resolves it via consumeDraftPick().
+  submitDraftPick: (index) => set({ pendingDraftPickIndex: index }),
+
+  // [BLOCK: Consume Draft Pick — Phase 6 Chunk 6A]
+  // One-shot read-and-clear, same shape as Hero.consumeDiedFlag() but for
+  // the opposite data-flow direction (React -> Phaser instead of Phaser ->
+  // React). Returns null if nothing is pending.
+  //
+  // Uses zustand's get()/set() (passed into the create() initializer) rather
+  // than referencing useGameStore by name — referencing the store's own
+  // exported const from inside its own initializer creates a circular type
+  // inference ("useGameStore implicitly has type 'any' because it does not
+  // have a type annotation and is referenced... in its own initializer"),
+  // which then cascades into implicit-any errors everywhere draftCards/
+  // DraftCard[] gets consumed downstream (DraftOverlay.tsx, GameScene.ts).
+  // get()/set() are already correctly typed against GameStore via the
+  // create<GameStore>() generic, so this avoids the self-reference entirely.
+  consumeDraftPick: (): number | null => {
+    const value = get().pendingDraftPickIndex;
+    if (value !== null) {
+      set({ pendingDraftPickIndex: null });
+    }
+    return value;
+  },
 }));
 
 // [BLOCK: Timer Formatter]

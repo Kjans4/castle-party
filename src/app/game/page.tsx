@@ -5,6 +5,8 @@
 // Mounts Phaser canvas + React HUD overlay.
 // Phaser renders at z-index 0 (fixed, full viewport).
 // HUD overlays at z-index 10 (pointer-events-none except portraits).
+// DraftOverlay (Phase 6 Chunk 6A) renders at z-index 20, above the rest of
+// the HUD, with its own pointer-events scoping — see DraftOverlay.tsx.
 // PhaserGame loaded via dynamic import with ssr:false — Phaser needs browser globals.
 // Watches gameStore.runResult (Phase 2) and navigates to /results once GameScene
 // sets it — this is the only bridge from Phaser's win/loss logic to Next.js routing.
@@ -17,6 +19,7 @@ import HeroPortraits from '@/ui/hud/HeroPortraits';
 import BeaconStatus from '@/ui/hud/BeaconStatus';
 import ResourceBars from '@/ui/hud/ResourceBars';
 import XPBar from '@/ui/hud/XPBar';
+import DraftOverlay from '@/ui/hud/DraftOverlay';
 import { useGameStore } from '@/ui/store/gameStore';
 
 // [BLOCK: Dynamic Import — SSR Disabled]
@@ -138,10 +141,18 @@ export default function GamePage() {
           color: 'rgba(255,255,255,0.1)',
           margin: 0,
         }}>
-          Phase 3 — Enemy Horde &amp; Combat
+          Phase 6 — Card Draft, Hero Skills &amp; Respawn
         </p>
 
       </div>
+
+      {/* [BLOCK: Draft Overlay — z-index 20, Phase 6 Chunk 6A] */}
+      {/* Self-contained: reads isDraftPending/draftCards from the store and */}
+      {/* renders nothing when no draft is active. Sits above the HUD layer */}
+      {/* above so its full-screen click-catching backdrop doesn't compete */}
+      {/* with the always-mounted HUD's pointer-events-none default. */}
+      <DraftOverlay />
+
     </div>
   );
 }
