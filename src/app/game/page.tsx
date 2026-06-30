@@ -20,6 +20,8 @@ import BeaconStatus from '@/ui/hud/BeaconStatus';
 import ResourceBars from '@/ui/hud/ResourceBars';
 import XPBar from '@/ui/hud/XPBar';
 import DraftOverlay from '@/ui/hud/DraftOverlay';
+import SpellBar from '@/ui/hud/SpellBar';
+import SkillCooldowns from '@/ui/hud/SkillCooldowns';
 import { useGameStore } from '@/ui/store/gameStore';
 
 // [BLOCK: Dynamic Import — SSR Disabled]
@@ -83,14 +85,18 @@ export default function GamePage() {
         color: '#ffffff',
       }}>
 
-        {/* [BLOCK: Top-Left — Hero Portraits] */}
+        {/* [BLOCK: Top-Left — Hero Portraits + Skill Cooldowns] */}
         <div style={{
           position: 'absolute',
           top: '16px',
           left: '16px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '10px',
           pointerEvents: 'auto',  // portraits are clickable
         }}>
           <HeroPortraits />
+          <SkillCooldowns />
         </div>
 
         {/* [BLOCK: Top-Center — Timer + Beacon Status] */}
@@ -128,6 +134,15 @@ export default function GamePage() {
           transform: 'translateX(-50%)',
         }}>
           <XPBar />
+        </div>
+
+        {/* [BLOCK: Bottom-Right — Spell Bar — Phase 6 Chunk 6B] */}
+        <div style={{
+          position: 'absolute',
+          bottom: '20px',
+          right: '16px',
+        }}>
+          <SpellBar />
         </div>
 
         {/* [BLOCK: Phase Label] */}

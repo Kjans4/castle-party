@@ -12,7 +12,20 @@
 // addModifier already dedupes by id) rather than stacking redundantly.
 
 import type { Hero } from '@/game/entities/Hero';
+import type { Enemy } from '@/game/entities/Enemy';
 import { flatModifier, percentModifier } from '@/game/primitives/Modifier';
+import { distance } from '@/game/utils/MathUtils';
+import { applyDamage } from '@/game/utils/CombatUtils';
+import { RunModifiers } from '@/game/systems/RunModifiers';
+import {
+  FIREBALL_DAMAGE, FIREBALL_RADIUS,
+  FREEZE_DURATION, FREEZE_RADIUS,
+  LIGHTNING_DAMAGE, LIGHTNING_RADIUS, LIGHTNING_STUN,
+  BLESSING_HEAL_PER_SEC, BLESSING_DURATION,
+  BERSERK_DAMAGE_BONUS, BERSERK_DURATION,
+  GUARDIAN_DEFENSE_BONUS, GUARDIAN_DURATION,
+  RELENTLESS_DURATION,
+} from '@/game/config/constants';
 
 export type UpgradeRarity = 'common' | 'rare' | 'legendary';
 export type UpgradeCategory = 'stat' | 'resource' | 'gameplay' | 'spell';
@@ -28,6 +41,24 @@ export interface UpgradeConfig {
   effect: (heroes: Hero[]) => void;
 }
 
+// [BLOCK: Spell Cast Context — Phase 6 Chunk 6B]
+// Spells need world state (heroes, enemies, positions) that a bare `() =>
+// void` stub can't express — this replaces that placeholder signature.
+// `scheduleEffect` lets a spell register a per-frame tick callback for
+// effects that can't resolve in a single instant (Blessing's heal-over-time)
+// without GameScene needing a bespoke case for every spell; GameScene owns
+// the actual ticking array and just calls back into tickFn each frame until
+// durationSeconds elapses.
+export interface SpellCastContext {
+  heroes: Hero[];
+  enemies: Enemy[];
+  leaderX: number;
+  leaderY: number;
+  cursorX: number;
+  cursorY: number;
+  scheduleEffect: (tickFn: (deltaSeconds: number) => void, durationSeconds: number) => void;
+}
+
 export interface SpellConfig {
   id: string;
   name: string;
@@ -36,16 +67,28 @@ export interface SpellConfig {
   attackElement?: 'fire' | 'ice' | 'electric' | 'magic';
   description: string;
   cooldownShared: number;    // always 5 seconds (shared spell cooldown)
-  effect: () => void;        // stub — Phase 6 Chunk 6B implementation
+  effect: (ctx: SpellCastContext) => void;
 }
 
 // [BLOCK: Spell Roster]
 // 7 party spells. Player assembles up to 3 per run through card draft.
 // Spells have no rarity and no expiry — can appear any number of times in draft.
 // All spells share a single 5-second cooldown.
-// NOTE: effect remains a stub in Chunk 6A — spell cards are draftable and
-// land in activeSpells, but casting (Z key) and the actual spell behaviors
-// are Chunk 6B scope per the agreed plan.
+//
+// Targeting split (confirmed): Fireball targets the mouse cursor position;
+// Freeze and Lightning Strike target a radius around the active LEADER's
+// position, per castle-party-phase6-plan.md Section 6's table. GameScene
+// supplies both leaderX/Y and cursorX/Y in SpellCastContext so each spell
+// picks whichever origin it needs.
+//
+// Freeze/Lightning's "stun" is implemented as a -100% speedStat percent
+// Modifier with a duration — this reuses the existing Stat + Modifier
+// system rather than inventing a new "stunned" boolean on Enemy. FLAGGED
+// APPROXIMATION: a speed-zeroed enemy that is already within attack range
+// of a beacon or hero will still attack, since attack eligibility in
+// Enemy.ts is range-based, not speed-based. True crowd control would need
+// an explicit stun flag checked by Enemy.update() — out of this chunk's
+// scope; documented rather than silently treated as equivalent.
 
 export const SPELL_FIREBALL: SpellConfig = {
   id: 'spell-fireball',
@@ -55,7 +98,14 @@ export const SPELL_FIREBALL: SpellConfig = {
   attackElement: 'fire',
   description: 'Blazing ball of fire that explodes on impact. AoE fire damage.',
   cooldownShared: 5,
-  effect: () => { /* Chunk 6B: AoE fire damage at target location */ },
+  effect: (ctx) => {
+    ctx.enemies.forEach((enemy) => {
+      if (enemy.isDead) return;
+      if (distance(ctx.cursorX, ctx.cursorY, enemy.x, enemy.y) <= FIREBALL_RADIUS) {
+        applyDamage(enemy, FIREBALL_DAMAGE, 'fire');
+      }
+    });
+  },
 };
 
 export const SPELL_FREEZE: SpellConfig = {
@@ -66,7 +116,14 @@ export const SPELL_FREEZE: SpellConfig = {
   attackElement: 'ice',
   description: 'Burst of frost that freezes all enemies within radius. Immobilizes briefly.',
   cooldownShared: 5,
-  effect: () => { /* Chunk 6B: freeze enemies in AoE radius */ },
+  effect: (ctx) => {
+    ctx.enemies.forEach((enemy) => {
+      if (enemy.isDead) return;
+      if (distance(ctx.leaderX, ctx.leaderY, enemy.x, enemy.y) <= FREEZE_RADIUS) {
+        enemy.speedStat.addModifier(percentModifier('spell-freeze', -100, 'spell', FREEZE_DURATION));
+      }
+    });
+  },
 };
 
 export const SPELL_LIGHTNING_STRIKE: SpellConfig = {
@@ -77,7 +134,15 @@ export const SPELL_LIGHTNING_STRIKE: SpellConfig = {
   attackElement: 'electric',
   description: 'Calls down lightning targeting enemies in radius. Struck enemies pause for 1 second.',
   cooldownShared: 5,
-  effect: () => { /* Chunk 6B: electric AoE + 1sec stun around active leader */ },
+  effect: (ctx) => {
+    ctx.enemies.forEach((enemy) => {
+      if (enemy.isDead) return;
+      if (distance(ctx.leaderX, ctx.leaderY, enemy.x, enemy.y) <= LIGHTNING_RADIUS) {
+        applyDamage(enemy, LIGHTNING_DAMAGE, 'electric');
+        enemy.speedStat.addModifier(percentModifier('spell-lightning-stun', -100, 'spell', LIGHTNING_STUN));
+      }
+    });
+  },
 };
 
 export const SPELL_BLESSING: SpellConfig = {
@@ -87,7 +152,17 @@ export const SPELL_BLESSING: SpellConfig = {
   subType: 'heal',
   description: 'Wave of holy energy. Heals all heroes gradually over 10 seconds.',
   cooldownShared: 5,
-  effect: () => { /* Chunk 6B: HoT on all heroes for 10 seconds */ },
+  effect: (ctx) => {
+    // Heal-over-time can't resolve in one instant call — registers a
+    // per-frame tick via scheduleEffect (GameScene owns the ticking array).
+    const healFractionPerSecond = BLESSING_HEAL_PER_SEC / 100;
+    ctx.scheduleEffect((deltaSeconds) => {
+      ctx.heroes.forEach((hero) => {
+        if (hero.isDead) return;
+        hero.heal(hero.maxHp * healFractionPerSecond * deltaSeconds);
+      });
+    }, BLESSING_DURATION);
+  },
 };
 
 export const SPELL_BERSERK: SpellConfig = {
@@ -97,7 +172,11 @@ export const SPELL_BERSERK: SpellConfig = {
   subType: 'boost',
   description: 'Battle fury. Increases attack damage of all heroes for 10 seconds.',
   cooldownShared: 5,
-  effect: () => { /* Chunk 6B: +% attack damage all heroes for 10s */ },
+  effect: (ctx) => {
+    ctx.heroes.forEach((hero) => {
+      hero.attackDamageStat.addModifier(percentModifier('spell-berserk', BERSERK_DAMAGE_BONUS, 'spell', BERSERK_DURATION));
+    });
+  },
 };
 
 export const SPELL_GUARDIAN: SpellConfig = {
@@ -107,7 +186,11 @@ export const SPELL_GUARDIAN: SpellConfig = {
   subType: 'shield',
   description: 'Protective barrier. Increases defense of all heroes for 10 seconds.',
   cooldownShared: 5,
-  effect: () => { /* Chunk 6B: +% defense all heroes for 10s */ },
+  effect: (ctx) => {
+    ctx.heroes.forEach((hero) => {
+      hero.defenseStat.addModifier(flatModifier('spell-guardian', GUARDIAN_DEFENSE_BONUS, 'spell', GUARDIAN_DURATION));
+    });
+  },
 };
 
 export const SPELL_RELENTLESS: SpellConfig = {
@@ -117,7 +200,12 @@ export const SPELL_RELENTLESS: SpellConfig = {
   subType: 'boost',
   description: 'Removes all resource costs and reduces skill cooldowns by 30% for 15 seconds.',
   cooldownShared: 5,
-  effect: () => { /* Chunk 6B: zero mana/stamina cost + 30% CDR for 15s */ },
+  // No per-frame tick needed here — RunModifiers.tick() (called once per
+  // frame by GameScene regardless of whether Relentless is active) handles
+  // counting the duration down; this just flips it on.
+  effect: () => {
+    RunModifiers.activateRelentless(RELENTLESS_DURATION);
+  },
 };
 
 export const SPELL_ROSTER: SpellConfig[] = [
@@ -236,63 +324,58 @@ export const UPGRADE_POOL: UpgradeConfig[] = [
   },
 
   // [BLOCK: Focus Line — Cooldown Reduction]
-  // GAP, flagged per decision #3 (skill cooldowns stay raw numbers, not
-  // Stats): there is currently no call site that reads a CDR percent when
-  // resetting a skill's cooldown — that logic doesn't exist until Chunk 6B
-  // adds Q/E activation to Hero.ts. This effect is a documented no-op so the
-  // upgrade is real and draftable now, but inert until 6B reads its owned
-  // status (via ownedUpgrades in the store) and applies the percent at
-  // cooldown-reset time.
+  // Phase 6 Chunk 6B: now writes to RunModifiers.skillCooldownReductionPercent,
+  // which Hero.ts reads at skill-cooldown-reset time (RunModifiers.ts —
+  // raw numbers per design decision, not a Stat). "Set to tier value" not
+  // additive — picking Focus II after Focus I replaces 10% with 15%.
   {
     id: 'cdr-t1', name: 'Focus I', category: 'resource', rarity: 'rare',
-    description: '-10% Cooldown on all hero skills. (Applied in Chunk 6B skill cooldown reset logic.)', tier: 1,
-    effect: () => { /* Chunk 6B: read as a raw percent at skill cooldown reset, not via Stat */ },
+    description: '-10% Cooldown on all hero skills.', tier: 1,
+    effect: () => { RunModifiers.skillCooldownReductionPercent = 10; },
   },
   {
     id: 'cdr-t2', name: 'Focus II', category: 'resource', rarity: 'rare',
-    description: '-15% Cooldown on all hero skills. (Applied in Chunk 6B skill cooldown reset logic.)', tier: 2, evolvesFrom: 'cdr-t1',
-    effect: () => { /* Chunk 6B */ },
+    description: '-15% Cooldown on all hero skills.', tier: 2, evolvesFrom: 'cdr-t1',
+    effect: () => { RunModifiers.skillCooldownReductionPercent = 15; },
   },
   {
     id: 'cdr-t3', name: 'Focus III', category: 'resource', rarity: 'rare',
-    description: '-20% Cooldown on all hero skills. (Applied in Chunk 6B skill cooldown reset logic.)', tier: 3, evolvesFrom: 'cdr-t2',
-    effect: () => { /* Chunk 6B */ },
+    description: '-20% Cooldown on all hero skills.', tier: 3, evolvesFrom: 'cdr-t2',
+    effect: () => { RunModifiers.skillCooldownReductionPercent = 20; },
   },
 
   // [BLOCK: Clarity Line — Mana Cost Reduction]
-  // Same deferral — needs the SharedPool.consumeExact() call site that
-  // Chunk 6B adds for Mana/Stamina costs. No-op placeholder for now.
   {
     id: 'clarity-t1', name: 'Clarity I', category: 'resource', rarity: 'rare',
-    description: '-10% Mana cost reduction. (Applied in Chunk 6B resource cost logic.)', tier: 1,
-    effect: () => { /* Chunk 6B */ },
+    description: '-10% Mana cost reduction.', tier: 1,
+    effect: () => { RunModifiers.manaCostReductionPercent = 10; },
   },
   {
     id: 'clarity-t2', name: 'Clarity II', category: 'resource', rarity: 'rare',
-    description: '-15% Mana cost reduction. (Applied in Chunk 6B resource cost logic.)', tier: 2, evolvesFrom: 'clarity-t1',
-    effect: () => { /* Chunk 6B */ },
+    description: '-15% Mana cost reduction.', tier: 2, evolvesFrom: 'clarity-t1',
+    effect: () => { RunModifiers.manaCostReductionPercent = 15; },
   },
   {
     id: 'clarity-t3', name: 'Clarity III', category: 'resource', rarity: 'rare',
-    description: '-20% Mana cost reduction. (Applied in Chunk 6B resource cost logic.)', tier: 3, evolvesFrom: 'clarity-t2',
-    effect: () => { /* Chunk 6B */ },
+    description: '-20% Mana cost reduction.', tier: 3, evolvesFrom: 'clarity-t2',
+    effect: () => { RunModifiers.manaCostReductionPercent = 20; },
   },
 
   // [BLOCK: Endurance Line — Stamina Cost Reduction]
   {
     id: 'endurance-t1', name: 'Endurance I', category: 'resource', rarity: 'rare',
-    description: '-10% Stamina cost reduction. (Applied in Chunk 6B resource cost logic.)', tier: 1,
-    effect: () => { /* Chunk 6B */ },
+    description: '-10% Stamina cost reduction.', tier: 1,
+    effect: () => { RunModifiers.staminaCostReductionPercent = 10; },
   },
   {
     id: 'endurance-t2', name: 'Endurance II', category: 'resource', rarity: 'rare',
-    description: '-15% Stamina cost reduction. (Applied in Chunk 6B resource cost logic.)', tier: 2, evolvesFrom: 'endurance-t1',
-    effect: () => { /* Chunk 6B */ },
+    description: '-15% Stamina cost reduction.', tier: 2, evolvesFrom: 'endurance-t1',
+    effect: () => { RunModifiers.staminaCostReductionPercent = 15; },
   },
   {
     id: 'endurance-t3', name: 'Endurance III', category: 'resource', rarity: 'rare',
-    description: '-20% Stamina cost reduction. (Applied in Chunk 6B resource cost logic.)', tier: 3, evolvesFrom: 'endurance-t2',
-    effect: () => { /* Chunk 6B */ },
+    description: '-20% Stamina cost reduction.', tier: 3, evolvesFrom: 'endurance-t2',
+    effect: () => { RunModifiers.staminaCostReductionPercent = 20; },
   },
 
   // [BLOCK: Multishot Line — +Projectiles]

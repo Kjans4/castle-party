@@ -3,41 +3,28 @@
 // Main gameplay scene. Owns world, camera, heroes, beacons, and input.
 // Writes to Zustand store each tick — React HUD reads from it.
 //
-// Phase 4 patch: applyMeleeHit and updateProjectiles now route damage through
-// CombatUtils.applyDamage() instead of calling enemy.takeDamage() directly,
-// so resistance (and Ghost's physical immunity) resolves before any damage
-// or aggro-flip happens. Everything else is unchanged from Phase 3.
+// Phase 4/5 history: see prior file headers in version control — resistance
+// system, wave batches, mini-unit death spawns, ranged enemies all already
+// live as of Phase 5.
 //
-// Phase 5 Chunk 5A patch: XP_VALUE_BY_ENEMY_ID extended with the three
-// Elemental Morph ids.
+// Phase 6 Chunk 6A: Card Draft System — draft triggers on level-up, resolves
+// via store polling (consumeDraftPick), applies UpgradeConfig.effect(heroes).
 //
-// Phase 5 Chunk 5B patch: XP_VALUE_BY_ENEMY_ID extended with Spider/Slime;
-// cleanupDeadEnemies() spawns 4 Mini units on Spider/Slime death targeting
-// the parent's lastKiller; applyAggroUpdates() filters Mini units out of
-// AggroSystem's input so their locked aggroState/aggroTarget is never
-// overwritten; Enemy.update() call site passes this.heroes for Mini
-// retargeting.
-//
-// Phase 5 Chunk 5C patch: XP_VALUE_BY_ENEMY_ID extended with Ranger/Priest —
-// this completes the full Phase 5 XP set.
-//
-// Phase 6 Chunk 6A patch: adds the Card Draft System.
-//   - collectXPShard's existing level-up branch now also calls triggerDraft()
-//     alongside the existing healAllHeroes() call.
-//   - triggerDraft() asks DraftSystem for a fresh 5-card draft and pushes it
-//     into the store via openDraft() — this does NOT pause anything in
-//     update(); per castle-party-phase6-plan.md Section 4 the world keeps
-//     ticking while the overlay is up.
-//   - update() polls useGameStore.getState().consumeDraftPick() each frame
-//     (mirrors the existing one-shot-flag pattern used elsewhere, just in
-//     the opposite data-flow direction) and resolves a pending pick via
-//     resolveDraftPick().
-//   - resolveDraftPick() calls DraftSystem.resolveDraft() to get back the
-//     picked UpgradeConfig (or null if a spell was picked), invokes its
-//     effect(this.heroes) if present, syncs DraftSystem's owned/skipped
-//     state back into the store, and closes the draft overlay.
-//   - Spell picks append to activeSpells via the store directly (capped at
-//     3, per the store's addActiveSpell) — casting/effects are Chunk 6B.
+// Phase 6 Chunk 6B: Spell System + Hero Skills.
+//   - Q/E/Z key bindings added alongside existing 1/2/3 leader-switch keys.
+//   - SharedPoolSystem initialized after spawnHeroes(), ticked each frame,
+//     injected into each Hero via setSharedPools().
+//   - resolveAttackResult / updateHeroAttacks updated for Hero.tryAttack()'s
+//     new AttackResult[] | null signature (Multishot support).
+//   - Skill activation (Q/E) resolves Hero.tryActivateSkill()'s returned
+//     SkillResult against this scene's own Enemy[]/Hero[] arrays. Skills
+//     needing a delay or duration (Barrage's slash loop, Meteor Shower's
+//     impact delay, Blackhole's pull-tick) are tracked in per-frame-ticked
+//     arrays, mirroring the existing projectiles/xpShards pattern.
+//   - Spell casting (Z key) resolves the first held spell in activeSpells,
+//     respecting the shared 5s cooldown tracked in gameStore.
+//   - RunModifiers.tick() called once per frame for Relentless's duration
+//     countdown; RunModifiers.reset() called in create() for run-start hygiene.
 
 import Phaser from 'phaser';
 import {
@@ -50,11 +37,14 @@ import {
   XP_SHARD_MORPH, XP_SHARD_SPIDER, XP_SHARD_SLIME, XP_SHARD_RANGER, XP_SHARD_PRIEST,
   MINI_SPAWN_COUNT,
   LEVEL_UP_HEAL_FRACTION,
+  METEOR_IMPACT_RADIUS,
+  BLACKHOLE_PULL_SPEED,
+  SPELL_SHARED_COOLDOWN,
 } from '@/game/config/constants';
 import { HERO_ROSTER } from '@/game/config/heroes';
 import { BEACON_ROSTER } from '@/game/config/beacons';
 import { registerAnimations } from '@/game/animations/registry';
-import { Hero, type AttackResult } from '@/game/entities/Hero';
+import { Hero, type AttackResult, type SkillResult } from '@/game/entities/Hero';
 import { Beacon } from '@/game/entities/Beacon';
 import { Enemy } from '@/game/entities/Enemy';
 import { Projectile } from '@/game/entities/Projectile';
@@ -63,12 +53,17 @@ import { XPShard } from '@/game/entities/XPShard';
 import { generateBeaconPositions } from '@/game/utils/BeaconPlacement';
 import { distance } from '@/game/utils/MathUtils';
 import { applyDamage } from '@/game/utils/CombatUtils';
+import { percentModifier } from '@/game/primitives/Modifier';
 import { DarknessSystem } from '@/game/systems/DarknessSystem';
 import { SpawnSystem } from '@/game/systems/SpawnSystem';
 import { AggroSystem } from '@/game/systems/AggroSystem';
 import { DraftSystem } from '@/game/systems/DraftSystem';
+import { SharedPoolSystem } from '@/game/systems/SharedPoolSystem';
+import { RunModifiers } from '@/game/systems/RunModifiers';
 import { ENEMY_ROSTER } from '@/game/config/enemies';
 import { useGameStore } from '@/ui/store/gameStore';
+import type { SpellCastContext } from '@/game/config/upgrades';
+import { SPELL_ROSTER } from '@/game/config/upgrades';
 
 // [BLOCK: XP Value Lookup]
 const XP_VALUE_BY_ENEMY_ID: Record<string, number> = {
@@ -91,6 +86,44 @@ const DEATH_SPAWN_PARENT_TO_MINI: Record<string, string> = {
   slime: 'mini-slime',
 };
 
+// [BLOCK: Spell Lookup — Phase 6 Chunk 6B]
+const spellById = new Map(SPELL_ROSTER.map((s) => [s.id, s]));
+
+// [BLOCK: Tracked Skill Effect Types — Phase 6 Chunk 6B]
+// Mirror the existing projectiles/xpShards array pattern: plain data, ticked
+// each frame in update(), pruned when finished. No Phaser GameObject backing
+// these except transient visual flashes spawned at resolution time.
+interface PendingBarrage {
+  hero: Hero;
+  aimAngle: number;
+  damage: number;
+  range: number;
+  coneAngleDeg: number;
+  slashesRemaining: number;
+  intervalRemaining: number;
+  intervalSeconds: number;
+}
+
+interface PendingMeteor {
+  x: number;
+  y: number;
+  damage: number;
+  detonateInSeconds: number;
+}
+
+interface ActiveBlackhole {
+  x: number;
+  y: number;
+  pullRadius: number;
+  damagePerSec: number;
+  remainingSeconds: number;
+}
+
+interface ScheduledSpellEffect {
+  tickFn: (deltaSeconds: number) => void;
+  remainingSeconds: number;
+}
+
 // [BLOCK: Game Scene Class]
 export class GameScene extends Phaser.Scene {
   // [BLOCK: Heroes]
@@ -109,14 +142,21 @@ export class GameScene extends Phaser.Scene {
   // [BLOCK: Draft — Phase 6 Chunk 6A]
   private draftSystem: DraftSystem = new DraftSystem();
 
+  // [BLOCK: Shared Resource Pools — Phase 6 Chunk 6B]
+  private sharedPoolSystem: SharedPoolSystem = new SharedPoolSystem();
+
   // [BLOCK: Projectiles]
   private projectiles: Projectile[] = [];
-
-  // [BLOCK: Enemy Projectiles — Phase 4 Chunk B]
   private enemyProjectiles: EnemyProjectile[] = [];
 
   // [BLOCK: XP Shards]
   private xpShards: XPShard[] = [];
+
+  // [BLOCK: Tracked Skill/Spell Effects — Phase 6 Chunk 6B]
+  private pendingBarrages: PendingBarrage[] = [];
+  private pendingMeteors: PendingMeteor[] = [];
+  private activeBlackholes: ActiveBlackhole[] = [];
+  private scheduledSpellEffects: ScheduledSpellEffect[] = [];
 
   // [BLOCK: Darkness]
   private darknessSystem: DarknessSystem = new DarknessSystem();
@@ -138,6 +178,9 @@ export class GameScene extends Phaser.Scene {
   private keys1!: Phaser.Input.Keyboard.Key;
   private keys2!: Phaser.Input.Keyboard.Key;
   private keys3!: Phaser.Input.Keyboard.Key;
+  private keyQ!: Phaser.Input.Keyboard.Key;
+  private keyE!: Phaser.Input.Keyboard.Key;
+  private keyZ!: Phaser.Input.Keyboard.Key;
 
   constructor() {
     super({ key: 'GameScene' });
@@ -171,10 +214,17 @@ export class GameScene extends Phaser.Scene {
     this.keys1 = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.ONE);
     this.keys2 = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.TWO);
     this.keys3 = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.THREE);
+    this.keyQ  = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.Q);
+    this.keyE  = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.E);
+    this.keyZ  = this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.Z);
+
+    RunModifiers.reset();
 
     this.spawnHeroes();
     this.spawnBeacons();
     this.createDarknessOverlay();
+
+    this.sharedPoolSystem.initialize(this.heroes);
 
     useGameStore.getState().setRunActive(true);
   }
@@ -222,6 +272,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Update Hero Attacks]
+  // Hero.tryAttack now returns AttackResult[] | null (Multishot support).
   private updateHeroAttacks(pointer: Phaser.Input.Pointer, camera: Phaser.Cameras.Scene2D.Camera): void {
     const leader = this.heroes[this.leaderIndex];
     const worldX = pointer.x + camera.scrollX;
@@ -229,14 +280,14 @@ export class GameScene extends Phaser.Scene {
     const leaderAngle = Math.atan2(worldY - leader.y, worldX - leader.x);
 
     if (pointer.leftButtonDown()) {
-      const leaderResult = leader.tryAttack(this, leaderAngle);
-      if (leaderResult) {
-        this.resolveAttackResult(leaderResult);
+      const leaderResults = leader.tryAttack(this, leaderAngle);
+      if (leaderResults) {
+        leaderResults.forEach((r) => this.resolveAttackResult(r));
 
         this.heroes.forEach((hero, i) => {
           if (i === this.leaderIndex || hero.isPosted) return;
-          const result = hero.tryAttack(this, leaderAngle);
-          if (result) this.resolveAttackResult(result);
+          const results = hero.tryAttack(this, leaderAngle);
+          results?.forEach((r) => this.resolveAttackResult(r));
         });
       }
     }
@@ -252,9 +303,280 @@ export class GameScene extends Phaser.Scene {
       if (distance(hero.x, hero.y, nearest.x, nearest.y) > range) return;
 
       const angle = Math.atan2(nearest.y - hero.y, nearest.x - hero.x);
-      const result = hero.tryAttack(this, angle);
-      if (result) this.resolveAttackResult(result);
+      const results = hero.tryAttack(this, angle);
+      results?.forEach((r) => this.resolveAttackResult(r));
     });
+  }
+
+  // [BLOCK: Update Hero Skills — Phase 6 Chunk 6B]
+  // Q/E activate the active LEADER's skills only — companions do not use
+  // skills (by design, per castle-party-phase6-plan.md Section 7).
+  private updateHeroSkills(pointer: Phaser.Input.Pointer, camera: Phaser.Cameras.Scene2D.Camera): void {
+    const leader = this.heroes[this.leaderIndex];
+    if (leader.isDead) return;
+
+    const worldX = pointer.x + camera.scrollX;
+    const worldY = pointer.y + camera.scrollY;
+    const aimAngle = Math.atan2(worldY - leader.y, worldX - leader.x);
+
+    if (Phaser.Input.Keyboard.JustDown(this.keyQ)) {
+      const result = leader.tryActivateSkill('Q', { aimAngle, cursorX: worldX, cursorY: worldY });
+      if (result) this.resolveSkillResult(result);
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keyE)) {
+      const result = leader.tryActivateSkill('E', { aimAngle, cursorX: worldX, cursorY: worldY });
+      if (result) this.resolveSkillResult(result);
+    }
+  }
+
+  // [BLOCK: Resolve Skill Result — Phase 6 Chunk 6B]
+  // Dispatches each SkillResult kind to its execution path. Barrage/Meteor
+  // Shower/Blackhole register into tracked arrays (resolved over subsequent
+  // frames in updatePendingSkillEffects); Sacred Pulse/Divine Surge resolve
+  // instantly since they don't need a delay or duration tick.
+  private resolveSkillResult(result: SkillResult): void {
+    switch (result.kind) {
+      case 'war_cry_applied':
+        // Already applied directly to the hero's stats inside Hero.ts —
+        // nothing left for GameScene to do.
+        return;
+
+      case 'barrage':
+        this.pendingBarrages.push({
+          hero: this.heroes[this.leaderIndex],
+          aimAngle: result.aimAngle,
+          damage: result.damage,
+          range: result.range,
+          coneAngleDeg: result.coneAngleDeg,
+          slashesRemaining: result.slashCount,
+          intervalRemaining: 0, // fire first slash immediately
+          intervalSeconds: result.intervalSeconds,
+        });
+        return;
+
+      case 'meteor_shower':
+        this.spawnMeteorShower(result);
+        return;
+
+      case 'blackhole':
+        this.activeBlackholes.push({
+          x: result.x,
+          y: result.y,
+          pullRadius: result.pullRadius,
+          damagePerSec: result.damagePerSec,
+          remainingSeconds: result.durationSeconds,
+        });
+        return;
+
+      case 'sacred_pulse':
+        this.resolveSacredPulse(result);
+        return;
+
+      case 'divine_surge':
+        this.resolveDivineSurge(result);
+        return;
+    }
+  }
+
+  // [BLOCK: Spawn Meteor Shower — Phase 6 Chunk 6B]
+  // Targets up to meteorCount nearest living enemies (no duplicates),
+  // placing one PendingMeteor per target at its CURRENT position — per the
+  // plan, meteors detonate where the enemy was when targeted, not where it
+  // ends up, since "enemies can dodge" during the delay.
+  private spawnMeteorShower(result: Extract<SkillResult, { kind: 'meteor_shower' }>): void {
+    const targets = [...this.enemies]
+      .filter((e) => !e.isDead)
+      .sort((a, b) =>
+        distance(result.sourceX, result.sourceY, a.x, a.y) -
+        distance(result.sourceX, result.sourceY, b.x, b.y)
+      )
+      .slice(0, result.meteorCount);
+
+    targets.forEach((enemy) => {
+      this.pendingMeteors.push({
+        x: enemy.x,
+        y: enemy.y,
+        damage: result.damage,
+        detonateInSeconds: result.delaySeconds,
+      });
+
+      // Ground circle indicator — visible during the delay window.
+      const indicator = this.add.circle(enemy.x, enemy.y, METEOR_IMPACT_RADIUS, 0xff6600, 0.18);
+      indicator.setStrokeStyle(1, 0xff6600, 0.6);
+      this.tweens.add({
+        targets: indicator,
+        alpha: 0,
+        duration: result.delaySeconds * 1000,
+        onComplete: () => indicator.destroy(),
+      });
+    });
+  }
+
+  // [BLOCK: Resolve Sacred Pulse — Phase 6 Chunk 6B]
+  // Instant dual effect: heal all heroes, drain nearby enemies.
+  private resolveSacredPulse(result: Extract<SkillResult, { kind: 'sacred_pulse' }>): void {
+    this.heroes.forEach((hero) => {
+      if (hero.isDead) return;
+      hero.heal(hero.maxHp * result.healFraction);
+    });
+
+    this.enemies.forEach((enemy) => {
+      if (enemy.isDead) return;
+      if (distance(result.sourceX, result.sourceY, enemy.x, enemy.y) <= result.radius) {
+        const drainAmount = enemy.currentHp * result.drainFraction;
+        applyDamage(enemy, drainAmount, 'magic');
+      }
+    });
+  }
+
+  // [BLOCK: Resolve Divine Surge — Phase 6 Chunk 6B]
+  // Instant dual effect: party-wide buff (5s) on all stats, nearby-enemy
+  // debuff (2s) on all stats. "All stats" is interpreted as hp/defense/speed
+  // (the Stat-backed fields on Unit) plus attackDamage/attackSpeed for
+  // heroes specifically, since enemies don't have those Stats.
+  private resolveDivineSurge(result: Extract<SkillResult, { kind: 'divine_surge' }>): void {
+    this.heroes.forEach((hero) => {
+      if (hero.isDead) return;
+      hero.hpStat.addModifier(percentModifier('divine-surge-hp', result.buffPercent, 'skill', result.buffDuration));
+      hero.defenseStat.addModifier(percentModifier('divine-surge-def', result.buffPercent, 'skill', result.buffDuration));
+      hero.speedStat.addModifier(percentModifier('divine-surge-spd', result.buffPercent, 'skill', result.buffDuration));
+      hero.attackDamageStat.addModifier(percentModifier('divine-surge-atk', result.buffPercent, 'skill', result.buffDuration));
+      hero.attackSpeedStat.addModifier(percentModifier('divine-surge-aspd', result.buffPercent, 'skill', result.buffDuration));
+    });
+
+    this.enemies.forEach((enemy) => {
+      if (enemy.isDead) return;
+      if (distance(result.sourceX, result.sourceY, enemy.x, enemy.y) <= result.radius) {
+        enemy.defenseStat.addModifier(percentModifier('divine-surge-debuff-def', -result.debuffPercent, 'skill', result.debuffDuration));
+        enemy.speedStat.addModifier(percentModifier('divine-surge-debuff-spd', -result.debuffPercent, 'skill', result.debuffDuration));
+      }
+    });
+  }
+
+  // [BLOCK: Update Pending Skill Effects — Phase 6 Chunk 6B]
+  // Ticks Barrage's slash loop, Meteor Shower's delayed detonation, and
+  // Blackhole's per-frame pull + damage tick. Mirrors the existing
+  // projectiles/xpShards prune-by-filter pattern.
+  private updatePendingSkillEffects(deltaSeconds: number): void {
+    this.updatePendingBarrages(deltaSeconds);
+    this.updatePendingMeteors(deltaSeconds);
+    this.updateActiveBlackholes(deltaSeconds);
+    this.updateScheduledSpellEffects(deltaSeconds);
+  }
+
+  // [BLOCK: Update Pending Barrages]
+  private updatePendingBarrages(deltaSeconds: number): void {
+    for (const barrage of this.pendingBarrages) {
+      barrage.intervalRemaining -= deltaSeconds;
+      if (barrage.intervalRemaining > 0) continue;
+
+      this.applyMeleeHit({
+        kind: 'melee',
+        angle: barrage.aimAngle,
+        range: barrage.range,
+        coneAngleDeg: barrage.coneAngleDeg,
+        damage: barrage.damage,
+        source: barrage.hero,
+      });
+      this.spawnMeleeFlash(barrage.hero.x, barrage.hero.y, barrage.aimAngle, barrage.range, barrage.coneAngleDeg);
+
+      barrage.slashesRemaining -= 1;
+      barrage.intervalRemaining = barrage.intervalSeconds;
+    }
+
+    this.pendingBarrages = this.pendingBarrages.filter((b) => b.slashesRemaining > 0);
+  }
+
+  // [BLOCK: Update Pending Meteors]
+  private updatePendingMeteors(deltaSeconds: number): void {
+    for (const meteor of this.pendingMeteors) {
+      meteor.detonateInSeconds -= deltaSeconds;
+      if (meteor.detonateInSeconds > 0) continue;
+
+      this.enemies.forEach((enemy) => {
+        if (enemy.isDead) return;
+        if (distance(meteor.x, meteor.y, enemy.x, enemy.y) <= METEOR_IMPACT_RADIUS) {
+          applyDamage(enemy, meteor.damage, 'magic');
+        }
+      });
+
+      const blast = this.add.circle(meteor.x, meteor.y, METEOR_IMPACT_RADIUS, 0xff6600, 0.5);
+      this.tweens.add({ targets: blast, alpha: 0, scale: 1.4, duration: 200, onComplete: () => blast.destroy() });
+    }
+
+    this.pendingMeteors = this.pendingMeteors.filter((m) => m.detonateInSeconds > 0);
+  }
+
+  // [BLOCK: Update Active Blackholes]
+  // Pulls enemies within pullRadius toward the blackhole's center via a
+  // direct velocity offset each frame (does not stop normal movement
+  // resolution, per the plan — applied as a position nudge here rather than
+  // routing through the physics body, since Enemy's own moveToward() would
+  // otherwise immediately overwrite any velocity set on its body this frame).
+  private updateActiveBlackholes(deltaSeconds: number): void {
+    for (const hole of this.activeBlackholes) {
+      hole.remainingSeconds -= deltaSeconds;
+
+      this.enemies.forEach((enemy) => {
+        if (enemy.isDead) return;
+        const d = distance(hole.x, hole.y, enemy.x, enemy.y);
+        if (d > hole.pullRadius || d <= 1) return;
+
+        const pullStep = BLACKHOLE_PULL_SPEED * deltaSeconds;
+        const t = Math.min(1, pullStep / d);
+        enemy.x += (hole.x - enemy.x) * t;
+        enemy.y += (hole.y - enemy.y) * t;
+
+        applyDamage(enemy, hole.damagePerSec * deltaSeconds, 'magic');
+      });
+    }
+
+    this.activeBlackholes = this.activeBlackholes.filter((h) => h.remainingSeconds > 0);
+  }
+
+  // [BLOCK: Update Scheduled Spell Effects — Phase 6 Chunk 6B]
+  // Drives Blessing's heal-over-time (and any future spell using
+  // scheduleEffect) by calling tickFn each frame until duration elapses.
+  private updateScheduledSpellEffects(deltaSeconds: number): void {
+    for (const effect of this.scheduledSpellEffects) {
+      effect.tickFn(deltaSeconds);
+      effect.remainingSeconds -= deltaSeconds;
+    }
+    this.scheduledSpellEffects = this.scheduledSpellEffects.filter((e) => e.remainingSeconds > 0);
+  }
+
+  // [BLOCK: Update Spell Cast — Phase 6 Chunk 6B]
+  // Z key casts the FIRST held spell in activeSpells (per plan: "cast active
+  // spell (first available spell in slots)"). Respects the shared 5s
+  // cooldown tracked in gameStore.spellCooldownRemaining, ticked in update().
+  private updateSpellCast(pointer: Phaser.Input.Pointer, camera: Phaser.Cameras.Scene2D.Camera): void {
+    if (!Phaser.Input.Keyboard.JustDown(this.keyZ)) return;
+
+    const store = useGameStore.getState();
+    if (store.spellCooldownRemaining > 0) return;
+    if (store.activeSpells.length === 0) return;
+
+    const spell = spellById.get(store.activeSpells[0]);
+    if (!spell) return;
+
+    const leader = this.heroes[this.leaderIndex];
+    const worldX = pointer.x + camera.scrollX;
+    const worldY = pointer.y + camera.scrollY;
+
+    const ctx: SpellCastContext = {
+      heroes: this.heroes,
+      enemies: this.enemies,
+      leaderX: leader.x,
+      leaderY: leader.y,
+      cursorX: worldX,
+      cursorY: worldY,
+      scheduleEffect: (tickFn, durationSeconds) => {
+        this.scheduledSpellEffects.push({ tickFn, remainingSeconds: durationSeconds });
+      },
+    };
+
+    spell.effect(ctx);
+    store.startSpellCooldown();
   }
 
   // [BLOCK: Find Nearest Enemy]
@@ -447,9 +769,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Collect XP Shard]
-  // Phase 6 Chunk 6A: on level-up, also triggers a card draft alongside the
-  // existing heal-all-heroes action — per castle-party-phase6-plan.md
-  // Section 4's "Phase 6 adds a third action: set isDraftPending: true."
   private collectXPShard(shard: XPShard): void {
     const store = useGameStore.getState();
     const levelBefore = store.partyLevel;
@@ -470,27 +789,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   // [BLOCK: Trigger Draft — Phase 6 Chunk 6A]
-  // Generates a fresh 5-card draft from DraftSystem and pushes it to the
-  // store. Deliberately does NOT set any "paused" flag — update() below
-  // keeps running enemy spawning, movement, and combat exactly as before;
-  // only the HUD overlay's visibility changes. If a draft is somehow
-  // already pending (e.g. two level-ups landed the same frame from a big
-  // XP dump), this simply overwrites it with a fresh draft — the prior
-  // draft's cards are lost rather than queued, since queuing multiple
-  // drafts isn't described anywhere in the plan and the existing XP-dump
-  // edge case (addXP's overflow-carry while-loop) already makes
-  // multi-level-up-per-shard a real possibility worth flagging here rather
-  // than silently mishandling.
   private triggerDraft(): void {
     const cards = this.draftSystem.generateDraft();
     useGameStore.getState().openDraft(cards);
   }
 
   // [BLOCK: Resolve Draft Pick — Phase 6 Chunk 6A]
-  // Called from update() once a pending pick is consumed from the store.
-  // Applies the picked upgrade's effect against the live Hero[] roster (or,
-  // for a spell pick, appends to activeSpells), syncs DraftSystem's owned/
-  // skipped state back into the store, and closes the overlay.
   private resolveDraftPick(pickedIndex: number): void {
     const store = useGameStore.getState();
     const cards = store.draftCards;
@@ -504,9 +808,6 @@ export class GameScene extends Phaser.Scene {
 
     if (pickedCard.kind === 'spell') {
       store.addActiveSpell(pickedCard.spell.id);
-      // Spells have no expiry/ownership tracking — still need to register
-      // skips for every OTHER card in this draft so upgrade skip-counts
-      // advance correctly even when the player picked a spell instead.
       cards.forEach((card, i) => {
         if (i !== pickedIndex) this.draftSystem.resolveSkip(card);
       });
@@ -556,12 +857,9 @@ export class GameScene extends Phaser.Scene {
     }
 
     useGameStore.getState().tickTimer(deltaSeconds);
+    RunModifiers.tick(deltaSeconds);
 
     // [BLOCK: Draft Pick Polling — Phase 6 Chunk 6A]
-    // One-shot consume, same pattern as Hero.consumeDiedFlag() but in the
-    // React -> Phaser direction. Runs every frame regardless of whether a
-    // draft is currently pending — consumeDraftPick() is a no-op (returns
-    // null) when there's nothing to resolve.
     const pendingPick = useGameStore.getState().consumeDraftPick();
     if (pendingPick !== null) {
       this.resolveDraftPick(pendingPick);
@@ -585,6 +883,10 @@ export class GameScene extends Phaser.Scene {
     });
 
     this.updateHeroAttacks(pointer, camera);
+    this.updateHeroSkills(pointer, camera);
+    this.updateSpellCast(pointer, camera);
+    this.updatePendingSkillEffects(deltaSeconds);
+
     this.updateProjectiles(deltaSeconds);
 
     this.updateBeaconProximityHealing(deltaSeconds);
@@ -607,8 +909,11 @@ export class GameScene extends Phaser.Scene {
 
     this.checkWinLossConditions(litCount);
 
+    this.sharedPoolSystem.update(deltaSeconds);
     this.syncResourceBars();
     this.syncHeroHp();
+    this.syncSkillCooldowns();
+    useGameStore.getState().tickSpellCooldown(deltaSeconds);
   }
 
   // [BLOCK: Check Win/Loss Conditions]
@@ -696,27 +1001,15 @@ export class GameScene extends Phaser.Scene {
     return level;
   }
 
-  // [BLOCK: Sync Resource Bars]
+  // [BLOCK: Sync Resource Bars — Phase 6 Chunk 6B]
+  // Now reads directly from SharedPoolSystem's two SharedPool instances
+  // instead of averaging individual hero pools — the shared pool IS the
+  // single source of truth as of this chunk (Hero.tryAttack/tryActivateSkill
+  // consume from it directly).
   private syncResourceBars(): void {
-    let manaTotal = 0;
-    let manaCount = 0;
-    let staminaTotal = 0;
-    let staminaCount = 0;
-
-    this.heroes.forEach((hero) => {
-      if (hero.manaPool) {
-        manaTotal += hero.manaPool.current;
-        manaCount++;
-      }
-      if (hero.staminaPool) {
-        staminaTotal += hero.staminaPool.current;
-        staminaCount++;
-      }
-    });
-
     const store = useGameStore.getState();
-    if (manaCount > 0) store.setManaPercent(manaTotal / manaCount);
-    if (staminaCount > 0) store.setStaminaPercent(staminaTotal / staminaCount);
+    store.setManaPercent(this.sharedPoolSystem.manaPool.current);
+    store.setStaminaPercent(this.sharedPoolSystem.staminaPool.current);
   }
 
   // [BLOCK: Sync Hero HP — Phase 4 Chunk C]
@@ -728,6 +1021,20 @@ export class GameScene extends Phaser.Scene {
       if (hero.consumeDiedFlag()) {
         store.triggerHeroDeathFlash(i);
       }
+    });
+  }
+
+  // [BLOCK: Sync Skill Cooldowns — Phase 6 Chunk 6B]
+  // Pushes the active leader's Q/E cooldown state into the store each frame
+  // for SkillCooldowns.tsx to render. Only the leader's cooldowns are synced
+  // — companions don't use skills, so there's nothing to show for them.
+  private syncSkillCooldowns(): void {
+    const leader = this.heroes[this.leaderIndex];
+    useGameStore.getState().setSkillCooldowns({
+      qRemaining: leader.qCooldownRemaining,
+      qMax: leader.qCooldownMax,
+      eRemaining: leader.eCooldownRemaining,
+      eMax: leader.eCooldownMax,
     });
   }
 }

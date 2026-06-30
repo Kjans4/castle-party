@@ -26,7 +26,7 @@
 import { create } from 'zustand';
 import type { HeroConfig } from '@/game/config/heroes';
 import { HERO_ROSTER } from '@/game/config/heroes';
-import { RUN_DURATION_SECONDS, BEACON_COUNT, XP_THRESHOLDS } from '@/game/config/constants';
+import { RUN_DURATION_SECONDS, BEACON_COUNT, XP_THRESHOLDS, SPELL_SHARED_COOLDOWN } from '@/game/config/constants';
 import type { DraftCard } from '@/game/systems/DraftSystem';
 
 // [BLOCK: XP Threshold Helper]
@@ -107,6 +107,16 @@ interface GameStore {
   // after resolving — same shape, opposite direction.
   pendingDraftPickIndex: number | null;
 
+  // [BLOCK: Spell Cooldown — Phase 6 Chunk 6B]
+  spellCooldownRemaining: number;  // 0–SPELL_SHARED_COOLDOWN seconds, shared across all 3 slots
+
+  // [BLOCK: Skill Cooldowns — Phase 6 Chunk 6B]
+  // Active leader's Q/E cooldown state, synced each frame by GameScene for
+  // SkillCooldowns.tsx. Not indexed per-hero like heroHpPercents — only the
+  // current leader's skills are ever shown, since companions don't use
+  // skills (by design, per castle-party-phase6-plan.md Section 7).
+  skillCooldowns: { qRemaining: number; qMax: number; eRemaining: number; eMax: number };
+
   // Actions
   setSquad: (squad: HeroConfig[]) => void;
   setActiveLeader: (index: number) => void;
@@ -130,6 +140,11 @@ interface GameStore {
   addActiveSpell: (spellId: string) => void;
   submitDraftPick: (index: number) => void;
   consumeDraftPick: () => number | null;
+
+  // [BLOCK: Spell + Skill Actions — Phase 6 Chunk 6B]
+  startSpellCooldown: () => void;
+  tickSpellCooldown: (deltaSeconds: number) => void;
+  setSkillCooldowns: (cooldowns: { qRemaining: number; qMax: number; eRemaining: number; eMax: number }) => void;
 }
 
 // [BLOCK: Default Beacon States]
@@ -179,6 +194,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
   skippedCounts: {},
   activeSpells: [],
   pendingDraftPickIndex: null,
+  spellCooldownRemaining: 0,
+  skillCooldowns: { qRemaining: 0, qMax: 0, eRemaining: 0, eMax: 0 },
 
   // [BLOCK: Actions]
   setSquad: (squad) => set({ squad }),
@@ -214,6 +231,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       skippedCounts: {},
       activeSpells: [],
       pendingDraftPickIndex: null,
+      spellCooldownRemaining: 0,
+      skillCooldowns: { qRemaining: 0, qMax: 0, eRemaining: 0, eMax: 0 },
     }),
 
   setBeaconState: (index, partial) =>
@@ -335,6 +354,23 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }
     return value;
   },
+
+  // [BLOCK: Start Spell Cooldown — Phase 6 Chunk 6B]
+  // Called by GameScene right after a spell's effect() fires. Shared across
+  // all 3 spell slots — casting ANY spell starts the cooldown for all, per
+  // castle-party-phase6-plan.md Section 6.
+  startSpellCooldown: () => set({ spellCooldownRemaining: SPELL_SHARED_COOLDOWN }),
+
+  // [BLOCK: Tick Spell Cooldown — Phase 6 Chunk 6B]
+  tickSpellCooldown: (deltaSeconds) =>
+    set((state) => ({
+      spellCooldownRemaining: Math.max(0, state.spellCooldownRemaining - deltaSeconds),
+    })),
+
+  // [BLOCK: Set Skill Cooldowns — Phase 6 Chunk 6B]
+  // Overwrites the whole object each frame — simpler than four separate
+  // setters for what's always read/written together by SkillCooldowns.tsx.
+  setSkillCooldowns: (cooldowns) => set({ skillCooldowns: cooldowns }),
 }));
 
 // [BLOCK: Timer Formatter]

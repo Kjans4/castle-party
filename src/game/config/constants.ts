@@ -198,3 +198,67 @@ export const DRAFT_LAST_CHANCE_THRESHOLD = 2; // skipped this many times = show 
 // unaffected, but the Stat exists on every Hero uniformly (simpler than a
 // per-hero-type field) and is just never read for Fencer's attack path.
 export const PROJECTILE_COUNT_BASE = 1;
+
+// [BLOCK: Spell System — Phase 6 Chunk 6B]
+export const SPELL_SHARED_COOLDOWN = 5;     // seconds — all spells share this cooldown
+export const SPELL_SLOT_COUNT = 3;          // max spells held simultaneously
+export const FIREBALL_DAMAGE = 80;
+export const FIREBALL_RADIUS = 128;         // px
+export const FREEZE_DURATION = 2.0;         // seconds
+export const FREEZE_RADIUS = 192;           // px
+export const LIGHTNING_DAMAGE = 60;
+export const LIGHTNING_RADIUS = 256;        // px
+export const LIGHTNING_STUN = 1.0;          // seconds
+export const BLESSING_HEAL_PER_SEC = 5;     // % max HP per second
+export const BLESSING_DURATION = 10;        // seconds
+export const BERSERK_DAMAGE_BONUS = 40;     // %
+export const BERSERK_DURATION = 10;         // seconds
+export const GUARDIAN_DEFENSE_BONUS = 8;    // flat
+export const GUARDIAN_DURATION = 10;        // seconds
+export const RELENTLESS_CDR = 30;           // % cooldown reduction during Relentless
+export const RELENTLESS_DURATION = 15;      // seconds
+
+// [BLOCK: Skill System — Phase 6 Chunk 6B]
+export const BARRAGE_SLASH_COUNT = 7;
+export const BARRAGE_DURATION = 1.5;        // seconds total
+export const BARRAGE_DAMAGE_PERCENT = 0.30; // 30% of attackDamage per slash
+export const BARRAGE_INTERVAL_SECONDS = 0.21; // seconds between slashes — per plan's exact figure
+                                               // (note: 7 * 0.21 = 1.47s, slightly under the stated
+                                               // 1.5s total — both figures are given explicitly in
+                                               // the plan and don't perfectly reconcile; interval is
+                                               // authoritative since it drives the actual tick loop)
+export const WAR_CRY_BUFF = 25;              // % bonus to attack speed, damage, defense
+export const WAR_CRY_DURATION = 5;           // seconds
+export const METEOR_DAMAGE = 80;
+export const METEOR_COUNT = 7;
+export const METEOR_DELAY = 3.0;             // seconds before impact
+export const METEOR_IMPACT_RADIUS = 48;      // px — TBD/assumed: plan gives no detonation radius for
+                                              // Meteor Shower, only damage/count/delay. Chosen as a
+                                              // tight blast roughly 1 enemy-body-width wide so "enemies
+                                              // can dodge" (per plan's own framing) is meaningful. Flag
+                                              // for playtesting/revision.
+export const BLACKHOLE_PULL_RADIUS = 128;    // px (2 meters)
+export const BLACKHOLE_PULL_SPEED = 150;     // px/sec — TBD/assumed: plan describes the pull qualitatively
+                                              // ("via velocity offset") but gives no speed value. Flagged.
+export const BLACKHOLE_DAMAGE_PER_SEC = 25;
+export const BLACKHOLE_DURATION = 2.5;       // seconds
+export const SACRED_PULSE_HEAL = 0.50;       // 50% max HP
+export const SACRED_PULSE_DRAIN = 0.30;      // 30% current HP from nearby enemies
+export const SACRED_PULSE_RADIUS = 192;      // px (3 meters)
+export const DIVINE_SURGE_BUFF = 30;         // % all stats party
+export const DIVINE_SURGE_DEBUFF = 15;       // % all stats enemies
+export const DIVINE_SURGE_BUFF_DUR = 5;      // seconds
+export const DIVINE_SURGE_DEBUFF_DUR = 2;    // seconds
+export const DIVINE_SURGE_RADIUS = 192;      // px (3 meters)
+
+// [BLOCK: Resource Costs — Phase 6 Chunk 6B]
+export const SORCERESS_ATTACK_MANA = 4.5;    // % mana per normal shot (50% reduction already applied)
+export const PRIESTESS_ATTACK_MANA = 3.0;    // % mana per normal shot (50% reduction already applied)
+
+// [BLOCK: Shared Pool Synergy — Phase 6 Chunk 6B]
+// Per stats.md Section 7 / SharedPool.ts's own doc-comment example.
+export const SYNERGY_BONUS_2_USERS = 15;     // % regen bonus when 2 heroes share a resource type
+export const SYNERGY_BONUS_3_USERS = 25;     // % regen bonus when all 3 heroes share a resource type
+
+// [BLOCK: Multishot Firing — Phase 6 Chunk 6B]
+export const MULTISHOT_SPREAD_DEGREES = 6;   // degrees between each extra projectile's aim angle
