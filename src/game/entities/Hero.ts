@@ -14,6 +14,14 @@
 //     SharedPoolSystem builds them; resource consumption routes through those.
 //   - RunModifiers read at cost-compute and cooldown-reset time for
 //     Focus/Clarity/Endurance upgrades and Relentless spell.
+// Phase 6 Chunk 6C:
+//   - REMOVES the Phase 4 Chunk C placeholder's instant auto-revive. Death
+//     is now permanent (frozen, dimmed) until GameScene's RespawnSystem
+//     fires and calls the new public respawnAt(x, y, hpFraction) method.
+//   - die() still triggers a brief white flash for visual feedback, but
+//     afterward settles into a dimmed "awaiting respawn" tint rather than
+//     reviving on its own — tickDeathFlashAndRespawn() is replaced with
+//     tickDeathVisual(), which only manages the cosmetic transition.
 
 import Phaser from 'phaser';
 import { Unit } from './Unit';
@@ -108,6 +116,14 @@ function rollSorceressElement(): AttackElement {
   return SORCERESS_ELEMENTS[Math.floor(Math.random() * SORCERESS_ELEMENTS.length)];
 }
 
+// [BLOCK: Dead Visual Constants — Phase 6 Chunk 6C]
+// Cosmetic-only — applied after the initial white death flash settles, for
+// the (now potentially much longer, up to 45s) window a hero waits for real
+// respawn. No constants.ts entry since these are pure visual tuning, not
+// gameplay values; kept local to this file like ENEMY_COLORS in Enemy.ts.
+const DEAD_TINT_COLOR = 0x333333;
+const DEAD_ALPHA = 0.35;
+
 // [BLOCK: Hero Class]
 export class Hero extends Unit {
   readonly config: HeroConfig;
@@ -135,8 +151,9 @@ export class Hero extends Unit {
   private _qCooldownMax: number = 0;
   private _eCooldownMax: number = 0;
 
-  // [BLOCK: Death/Respawn — Phase 4 Chunk C]
+  // [BLOCK: Death/Respawn — Phase 4 Chunk C, Phase 6 Chunk 6C]
   private deathFlashRemaining: number = 0;
+  private hasSettledDeadVisual: boolean = false;
   private spawnColorHex: number;
   private diedThisFrame: boolean = false;
 
@@ -458,11 +475,15 @@ export class Hero extends Unit {
     return { kind: 'war_cry_applied' };
   }
 
-  // [BLOCK: Die — Phase 4 Chunk C]
+  // [BLOCK: Die — Phase 4 Chunk C, Phase 6 Chunk 6C patch]
+  // Still flashes white briefly on death (cosmetic), but no longer schedules
+  // an auto-revive — death is now permanent until GameScene's RespawnSystem
+  // calls respawnAt() (see file-header note).
   die(): void {
     super.die();
     this.diedThisFrame = true;
     this.deathFlashRemaining = HERO_DEATH_FLASH_DURATION_SECONDS;
+    this.hasSettledDeadVisual = false;
     this.bodyRect.setFillStyle(0xffffff);
     const body = this.body as Phaser.Physics.Arcade.Body;
     body.setVelocity(0, 0);
@@ -476,19 +497,43 @@ export class Hero extends Unit {
     return v;
   }
 
-  // [BLOCK: Tick Death Flash And Respawn — Phase 4 Chunk C]
-  private tickDeathFlashAndRespawn(deltaSeconds: number): void {
+  // [BLOCK: Tick Death Visual — Phase 6 Chunk 6C]
+  // Replaces the old tickDeathFlashAndRespawn — purely cosmetic now. Counts
+  // down the initial white flash, then settles into a dimmed gray tint +
+  // reduced alpha to read clearly as "dead, awaiting respawn" for however
+  // long the real timer (45s/30s/10s) takes. Does NOT revive — that only
+  // happens via respawnAt(), called externally by GameScene.
+  private tickDeathVisual(deltaSeconds: number): void {
+    if (this.hasSettledDeadVisual) return;
+
     this.deathFlashRemaining -= deltaSeconds;
     if (this.deathFlashRemaining <= 0) {
-      this.revive(this.maxHp);
-      this.bodyRect.setFillStyle(this.spawnColorHex);
+      this.bodyRect.setFillStyle(DEAD_TINT_COLOR);
+      this.setAlpha(DEAD_ALPHA);
+      this.hasSettledDeadVisual = true;
     }
+  }
+
+  // [BLOCK: Respawn At — Phase 6 Chunk 6C]
+  // Called externally by GameScene once RespawnSystem's shared countdown
+  // fires and a nearest-lit-beacon position has been resolved. Repositions
+  // the physics body directly (body.reset zeroes velocity too, avoiding any
+  // residual drift from the moment of death), revives at hpFraction of max
+  // HP (50% per RESPAWN_HP_FRACTION), and restores normal visuals.
+  respawnAt(x: number, y: number, hpFraction: number): void {
+    const body = this.body as Phaser.Physics.Arcade.Body;
+    body.reset(x, y);
+
+    this.revive(this.maxHp * hpFraction);
+    this.bodyRect.setFillStyle(this.spawnColorHex);
+    this.setAlpha(this.isLeader ? 1 : 0.6);
+    this.hasSettledDeadVisual = false;
   }
 
   // [BLOCK: Update]
   update(deltaSeconds: number, _leader?: Hero): void {
     if (this.isDead) {
-      this.tickDeathFlashAndRespawn(deltaSeconds);
+      this.tickDeathVisual(deltaSeconds);
       return;
     }
 

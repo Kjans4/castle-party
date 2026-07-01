@@ -117,6 +117,15 @@ interface GameStore {
   // skills (by design, per castle-party-phase6-plan.md Section 7).
   skillCooldowns: { qRemaining: number; qMax: number; eRemaining: number; eMax: number };
 
+  // [BLOCK: Respawn State — Phase 6 Chunk 6C]
+  // Synced each frame by GameScene from RespawnSystem + live hero.isDead
+  // scan. respawnTimerSeconds mirrors RespawnSystem's single shared
+  // countdown — per the plan, all currently-dead heroes share one timer
+  // ("both respawn simultaneously"), so this is not indexed per-hero.
+  deadHeroIndices: number[];      // indices of currently dead heroes
+  respawnTimerSeconds: number;    // time remaining until next respawn (shown in HUD)
+  isTeamWiped: boolean;           // true when all 3 heroes are dead simultaneously
+
   // Actions
   setSquad: (squad: HeroConfig[]) => void;
   setActiveLeader: (index: number) => void;
@@ -145,6 +154,11 @@ interface GameStore {
   startSpellCooldown: () => void;
   tickSpellCooldown: (deltaSeconds: number) => void;
   setSkillCooldowns: (cooldowns: { qRemaining: number; qMax: number; eRemaining: number; eMax: number }) => void;
+
+  // [BLOCK: Respawn Action — Phase 6 Chunk 6C]
+  // Single bundled setter (mirrors setSkillCooldowns's pattern) since all
+  // three fields are always read/written together by GameScene each frame.
+  setRespawnState: (deadHeroIndices: number[], respawnTimerSeconds: number, isTeamWiped: boolean) => void;
 }
 
 // [BLOCK: Default Beacon States]
@@ -196,6 +210,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
   pendingDraftPickIndex: null,
   spellCooldownRemaining: 0,
   skillCooldowns: { qRemaining: 0, qMax: 0, eRemaining: 0, eMax: 0 },
+  deadHeroIndices: [],
+  respawnTimerSeconds: 0,
+  isTeamWiped: false,
 
   // [BLOCK: Actions]
   setSquad: (squad) => set({ squad }),
@@ -233,6 +250,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       pendingDraftPickIndex: null,
       spellCooldownRemaining: 0,
       skillCooldowns: { qRemaining: 0, qMax: 0, eRemaining: 0, eMax: 0 },
+      deadHeroIndices: [],
+      respawnTimerSeconds: 0,
+      isTeamWiped: false,
     }),
 
   setBeaconState: (index, partial) =>
@@ -371,6 +391,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
   // Overwrites the whole object each frame — simpler than four separate
   // setters for what's always read/written together by SkillCooldowns.tsx.
   setSkillCooldowns: (cooldowns) => set({ skillCooldowns: cooldowns }),
+
+  // [BLOCK: Set Respawn State — Phase 6 Chunk 6C]
+  setRespawnState: (deadHeroIndices, respawnTimerSeconds, isTeamWiped) =>
+    set({ deadHeroIndices, respawnTimerSeconds, isTeamWiped }),
 }));
 
 // [BLOCK: Timer Formatter]

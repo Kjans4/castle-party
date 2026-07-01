@@ -26,6 +26,31 @@
 //   - RunModifiers.tick() called once per frame for Relentless's duration
 //     countdown; RunModifiers.reset() called in create() for run-start hygiene.
 
+// Phase 6 Chunk 6B: Spell System + Hero Skills (Q/E/Z input, SharedPoolSystem,
+// tracked skill effects). See prior header for details.
+//
+// Phase 6 Chunk 6C: Real Respawn System.
+//   - RespawnSystem wired into update(): computes live dead-hero count each
+//     frame, fires a shared respawn signal per the 45s/30s/10s table.
+//   - On fire, each still-dead hero is repositioned to the nearest LIT
+//     beacon to where they died (findNearestLitBeaconTo) and revived at
+//     RESPAWN_HP_FRACTION (50%) via Hero.respawnAt().
+//   - Team wipe (all 3 dead simultaneously): isTeamWiped freezes player
+//     input (movement/attacks/skills) for the WHOLE frame loop, but enemies,
+//     spawning, beacons, and the respawn countdown all keep ticking. Camera
+//     naturally stays put since the (dead, frozen) leader isn't moving.
+//   - Leader-switch keys (1/2/3) now skip dead heroes entirely — cannot
+//     switch onto a corpse.
+//   - DELIBERATE BEHAVIOR CHANGE, confirmed by explicit user instruction:
+//     checkWinLossConditions() no longer treats litCount === 0 as an instant
+//     loss condition (this overrides the Phase 2/3 design). Defeat is now
+//     triggered ONLY when a full team-wipe's respawn timer fires and there
+//     is no lit beacon left to respawn at — losing all beacons alone no
+//     longer ends the run by itself. Flagging this prominently since it's a
+//     real divergence from the original castle-party.md loss-condition
+//     design, not a Chunk 6C plan item — "that's for now" per instruction,
+//     implying this may be revisited in a future phase.
+
 import Phaser from 'phaser';
 import {
   WORLD_W, WORLD_H, TILE_SIZE, CAMERA_LERP,
@@ -39,7 +64,7 @@ import {
   LEVEL_UP_HEAL_FRACTION,
   METEOR_IMPACT_RADIUS,
   BLACKHOLE_PULL_SPEED,
-  SPELL_SHARED_COOLDOWN,
+  RESPAWN_HP_FRACTION,
 } from '@/game/config/constants';
 import { HERO_ROSTER } from '@/game/config/heroes';
 import { BEACON_ROSTER } from '@/game/config/beacons';
@@ -59,6 +84,7 @@ import { SpawnSystem } from '@/game/systems/SpawnSystem';
 import { AggroSystem } from '@/game/systems/AggroSystem';
 import { DraftSystem } from '@/game/systems/DraftSystem';
 import { SharedPoolSystem } from '@/game/systems/SharedPoolSystem';
+import { RespawnSystem } from '@/game/systems/RespawnSystem';
 import { RunModifiers } from '@/game/systems/RunModifiers';
 import { ENEMY_ROSTER } from '@/game/config/enemies';
 import { useGameStore } from '@/ui/store/gameStore';
@@ -144,6 +170,13 @@ export class GameScene extends Phaser.Scene {
 
   // [BLOCK: Shared Resource Pools — Phase 6 Chunk 6B]
   private sharedPoolSystem: SharedPoolSystem = new SharedPoolSystem();
+
+  // [BLOCK: Respawn — Phase 6 Chunk 6C]
+  private respawnSystem: RespawnSystem = new RespawnSystem();
+  // Input-freeze flag: true when all 3 heroes are dead simultaneously. While
+  // true the hero update/attack/skill/spell blocks are skipped entirely, but
+  // enemies, spawning, beacons, and the respawn countdown keep ticking.
+  private isTeamWiped: boolean = false;
 
   // [BLOCK: Projectiles]
   private projectiles: Projectile[] = [];
@@ -263,6 +296,10 @@ export class GameScene extends Phaser.Scene {
   // [BLOCK: Set Leader]
   private setLeader(index: number): void {
     if (index < 0 || index >= this.heroes.length) return;
+    // Cannot switch to a dead hero — per castle-party-phase6-plan.md Section 9.
+    // Call sites (1/2/3 keys, executeRespawn) already guard this, but
+    // checking here too makes setLeader safe to call unconditionally.
+    if (this.heroes[index].isDead) return;
 
     this.leaderIndex = index;
     this.heroes.forEach((hero, i) => hero.setAsLeader(i === index));
@@ -865,9 +902,12 @@ export class GameScene extends Phaser.Scene {
       this.resolveDraftPick(pendingPick);
     }
 
-    if (Phaser.Input.Keyboard.JustDown(this.keys1)) this.setLeader(0);
-    if (Phaser.Input.Keyboard.JustDown(this.keys2)) this.setLeader(1);
-    if (Phaser.Input.Keyboard.JustDown(this.keys3)) this.setLeader(2);
+    // [BLOCK: Leader-Switch Keys (1/2/3) — skip dead heroes (Phase 6 Chunk 6C)]
+    // Dead heroes are displayed with a respawn timer on their portrait;
+    // switching to one is explicitly disabled per the plan.
+    if (Phaser.Input.Keyboard.JustDown(this.keys1) && !this.heroes[0]?.isDead) this.setLeader(0);
+    if (Phaser.Input.Keyboard.JustDown(this.keys2) && !this.heroes[1]?.isDead) this.setLeader(1);
+    if (Phaser.Input.Keyboard.JustDown(this.keys3) && !this.heroes[2]?.isDead) this.setLeader(2);
 
     const leader = this.heroes[this.leaderIndex];
     const pointer = this.input.activePointer;
@@ -882,9 +922,14 @@ export class GameScene extends Phaser.Scene {
       hero.update(deltaSeconds);
     });
 
-    this.updateHeroAttacks(pointer, camera);
-    this.updateHeroSkills(pointer, camera);
-    this.updateSpellCast(pointer, camera);
+    // [BLOCK: Input Freeze During Team Wipe — Phase 6 Chunk 6C]
+    // When all heroes are dead, skip attacks/skills/spells — camera stays
+    // on the last-known leader position naturally (no follow to update).
+    if (!this.isTeamWiped) {
+      this.updateHeroAttacks(pointer, camera);
+      this.updateHeroSkills(pointer, camera);
+      this.updateSpellCast(pointer, camera);
+    }
     this.updatePendingSkillEffects(deltaSeconds);
 
     this.updateProjectiles(deltaSeconds);
@@ -907,29 +952,116 @@ export class GameScene extends Phaser.Scene {
 
     this.updateXPShards(deltaSeconds);
 
-    this.checkWinLossConditions(litCount);
+    this.checkWinLossConditions();
 
     this.sharedPoolSystem.update(deltaSeconds);
     this.syncResourceBars();
     this.syncHeroHp();
     this.syncSkillCooldowns();
     useGameStore.getState().tickSpellCooldown(deltaSeconds);
+    this.updateRespawnSystem(deltaSeconds);
   }
 
-  // [BLOCK: Check Win/Loss Conditions]
-  private checkWinLossConditions(litCount: number): void {
+  // [BLOCK: Check Win/Loss Conditions — Phase 6 Chunk 6C]
+  // DELIBERATE CHANGE: litCount === 0 no longer triggers instant defeat
+  // (confirmed by explicit user instruction, Phase 6 Chunk 6C). Defeat now
+  // fires only when a team-wipe respawn would fire but there is no lit
+  // beacon to respawn at. Victory condition unchanged: runTimer reaches 0.
+  private checkWinLossConditions(): void {
     if (this.runEnded) return;
-
-    if (litCount === 0) {
-      this.startDefeatFade();
-      return;
-    }
 
     const runTimer = useGameStore.getState().runTimer;
     if (runTimer <= 0) {
       this.runEnded = true;
       useGameStore.getState().endRun('victory');
     }
+  }
+
+  // [BLOCK: Update Respawn System — Phase 6 Chunk 6C]
+  // Computes the live dead-hero count, hands it to RespawnSystem.update(),
+  // fires respawns (or defeat) when the countdown reaches zero, and syncs
+  // state into the store for HUD display.
+  private updateRespawnSystem(deltaSeconds: number): void {
+    const deadIndices = this.heroes
+      .map((h, i) => h.isDead ? i : -1)
+      .filter((i) => i >= 0);
+
+    const deadCount = deadIndices.length;
+    this.isTeamWiped = deadCount >= this.heroes.length;
+
+    const shouldRespawn = this.respawnSystem.update(deltaSeconds, deadCount);
+
+    if (shouldRespawn) {
+      this.executeRespawn(deadIndices);
+    }
+
+    // After potential respawn, update team-wipe flag again (heroes may have
+    // just revived, clearing the flag for next frame's input gate).
+    const nowDeadIndices = this.heroes
+      .map((h, i) => h.isDead ? i : -1)
+      .filter((i) => i >= 0);
+    this.isTeamWiped = nowDeadIndices.length >= this.heroes.length;
+
+    useGameStore.getState().setRespawnState(
+      nowDeadIndices,
+      this.respawnSystem.currentRemainingSeconds,
+      this.isTeamWiped,
+    );
+  }
+
+  // [BLOCK: Execute Respawn — Phase 6 Chunk 6C]
+  // Called once on the frame RespawnSystem fires. Each dead hero is moved to
+  // the nearest lit beacon to where it currently stands (the hero's x/y
+  // hasn't changed since death — physics body is zeroed but position remains
+  // the death position, which is exactly what the plan specifies: "nearest
+  // lit beacon to where they died"). If no lit beacon exists at respawn time,
+  // the run ends in defeat — this is now the ONLY defeat condition.
+  private executeRespawn(deadIndices: number[]): void {
+    if (this.runEnded) return;
+
+    const litBeacons = this.beacons.filter((b) => b.isLit);
+
+    if (litBeacons.length === 0) {
+      // No lit beacon to respawn at — this is the new loss condition.
+      this.startDefeatFade();
+      return;
+    }
+
+    deadIndices.forEach((heroIdx) => {
+      const hero = this.heroes[heroIdx];
+      if (!hero.isDead) return; // already revived somehow — skip
+
+      const beacon = this.findNearestLitBeaconTo(hero.x, hero.y);
+      if (!beacon) return;
+
+      hero.respawnAt(beacon.x, beacon.y, RESPAWN_HP_FRACTION);
+    });
+
+    // If the dead hero was the current leader (only possible during a
+    // team wipe), make sure the leader is still a living hero after respawn.
+    if (this.heroes[this.leaderIndex].isDead) {
+      const firstAlive = this.heroes.findIndex((h) => !h.isDead);
+      if (firstAlive >= 0) this.setLeader(firstAlive);
+    }
+  }
+
+  // [BLOCK: Find Nearest Lit Beacon To — Phase 6 Chunk 6C]
+  // Scene-level helper mirroring Enemy.ts's private findNearestLitBeacon()
+  // but accessible to GameScene for respawn positioning.
+  private findNearestLitBeaconTo(x: number, y: number): Beacon | null {
+    let nearest: Beacon | null = null;
+    let nearestDist = Infinity;
+
+    for (const beacon of this.beacons) {
+      if (!beacon.isLit) continue;
+      const d = distance(x, y, beacon.x, beacon.y);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearest = beacon;
+      }
+    }
+
+    return nearest;
   }
 
   // [BLOCK: Start Defeat Fade]

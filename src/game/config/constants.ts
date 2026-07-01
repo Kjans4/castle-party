@@ -262,3 +262,6 @@ export const SYNERGY_BONUS_3_USERS = 25;     // % regen bonus when all 3 heroes 
 
 // [BLOCK: Multishot Firing — Phase 6 Chunk 6B]
 export const MULTISHOT_SPREAD_DEGREES = 6;   // degrees between each extra projectile's aim angle
+
+// [BLOCK: Respawn System — Phase 6 Chunk 6C]
+export const RESPAWN_HP_FRACTION = 0.50;     // heroes respawn at 50% max HP
