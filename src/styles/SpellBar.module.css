@@ -1,0 +1,94 @@
+/* [File: src/styles/SpellBar.module.css] */
+/* [BLOCK: Spell Bar HUD Styles] */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background-color: rgba(0, 0, 0, 0.4);
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.keyHint {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.25);
+  font-variant-numeric: tabular-nums;
+}
+
+.slots {
+  display: flex;
+  gap: 6px;
+}
+
+.emptySlot {
+  width: 52px;
+  height: 52px;
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+.slot {
+  width: 52px;
+  height: 52px;
+  border: 1px solid rgba(196, 74, 255, 0.7);
+  background-color: rgba(196, 74, 255, 0.12);
+  opacity: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  transition: opacity 0.2s;
+}
+
+.slot[data-cooldown='true'] {
+  border-color: rgba(196, 74, 255, 0.25);
+  background-color: rgba(196, 74, 255, 0.04);
+  opacity: 0.45;
+}
+
+.slotName {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #c44aff;
+  text-align: center;
+  line-height: 1.3;
+}
+
+.cooldownTrack {
+  width: 100%;
+  height: 4px;
+  background-color: rgba(255, 255, 255, 0.08);
+  position: relative;
+  overflow: hidden;
+}
+
+.cooldownFill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: var(--fill-width, 0%);
+  background-color: #c44aff;
+  box-shadow: 0 0 6px rgba(196, 74, 255, 0.6);
+  transition: width 0.1s;
+}
+
+.cooldownTrack[data-cooldown='true'] .cooldownFill {
+  box-shadow: none;
+}

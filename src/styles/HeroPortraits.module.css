@@ -1,0 +1,167 @@
+/* [File: src/styles/HeroPortraits.module.css] */
+/* [BLOCK: Hero Portraits HUD Styles] */
+/* Cascade order matters: base -> active -> flashing -> dead, matching the
+   original priority (dead > flashing > active > default). */
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cardWrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 6px;
+  min-width: 140px;
+  position: relative;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: all 0.3s;
+
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background-color: rgba(0, 0, 0, 0.5);
+  opacity: 0.55;
+  box-shadow: none;
+}
+
+.card[data-active='true'] {
+  border-color: var(--hero-color);
+  background-color: rgba(var(--hero-rgb), 0.12);
+  opacity: 1;
+}
+
+.card[data-flashing='true'] {
+  border-color: rgba(255, 255, 255, 0.9);
+  background-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 0 16px rgba(255, 255, 255, 0.7);
+}
+
+.card[data-dead='true'] {
+  border-color: rgba(255, 68, 68, 0.3);
+  background-color: rgba(255, 0, 0, 0.05);
+  opacity: 0.45;
+  cursor: default;
+  box-shadow: none;
+}
+
+.swatch {
+  width: 28px;
+  height: 36px;
+  flex-shrink: 0;
+  background-color: var(--hero-color);
+  opacity: 0.5;
+}
+
+.card[data-active='true'] .swatch {
+  opacity: 1;
+}
+
+.card[data-dead='true'] .swatch {
+  background-color: #333333;
+  opacity: 0.5;
+}
+
+.info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.nameRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.name {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.card[data-active='true'] .name {
+  color: var(--hero-color);
+}
+
+.card[data-dead='true'] .name {
+  color: rgba(255, 80, 80, 0.7);
+}
+
+.indexBadge {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 0 4px;
+  line-height: 14px;
+}
+
+.role {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.deadState {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.deadLabel {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: rgba(255, 68, 68, 0.8);
+}
+
+.respawnTimer {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 200, 200, 0.7);
+  font-weight: 600;
+}
+
+.activeDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background-color: var(--hero-color);
+  margin-left: auto;
+  box-shadow: 0 0 6px var(--hero-color);
+  flex-shrink: 0;
+}
+
+.hpTrack {
+  width: 140px;
+  height: 3px;
+  background-color: rgba(255, 255, 255, 0.1);
+  position: relative;
+  overflow: hidden;
+}
+
+.hpFill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: var(--hp-width, 100%);
+  background-color: var(--hp-color, #22c55e);
+  transition: width 0.15s, background-color 0.3s;
+}
+
+.hpFill[data-dead='true'] {
+  opacity: 0.3;
+}

@@ -5,8 +5,12 @@
 // Displays 7 beacon fire icons showing burning/low/extinguished state, plus
 // a live darkness level label. Reads from Zustand store — driven live by
 // GameScene + DarknessSystem starting Phase 2.
+// Styles extracted to src/styles/BeaconStatus.module.css — per-tier colors
+// and computed fire-meter widths passed through as CSS custom properties.
 
+import { CSSProperties } from 'react';
 import { useGameStore } from '@/ui/store/gameStore';
+import styles from '@/styles/BeaconStatus.module.css';
 
 // [BLOCK: Beacon Visual State Helper]
 // Mirrors Beacon.ts's visualState getter — derived here from the same
@@ -37,62 +41,43 @@ const TIER_POST_COLOR: Record<BeaconTier, string> = {
   extinguished: 'rgba(255,255,255,0.15)',
 };
 
+function darknessLabelColor(darknessLevel: number): string {
+  if (darknessLevel >= 6) return 'rgba(255,80,80,0.6)';
+  if (darknessLevel >= 4) return 'rgba(255,140,40,0.6)';
+  return 'rgba(255,255,255,0.2)';
+}
+
+function fireMeterFillColor(fireMeter: number): string {
+  if (fireMeter > 50) return '#ff8c28';
+  if (fireMeter > 25) return '#ffdd4a';
+  return '#ff4444';
+}
+
 export default function BeaconStatus() {
   const beaconStates  = useGameStore((s) => s.beaconStates);
   const darknessLevel = useGameStore((s) => s.darknessLevel);
   const litCount      = beaconStates.filter((b) => b.isLit).length;
 
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      gap: '6px',
-    }}>
-      <p style={{
-        fontSize: '9px',
-        textTransform: 'uppercase',
-        letterSpacing: '0.2em',
-        color: 'rgba(255,255,255,0.3)',
-        margin: 0,
-      }}>
-        Beacons {litCount}/7
-      </p>
+    <div className={styles.container}>
+      <p className={styles.label}>Beacons {litCount}/7</p>
 
       {/* Beacon icons row */}
-      <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
+      <div className={styles.row}>
         {beaconStates.map((beacon) => {
           const tier = getTier(beacon.isLit, beacon.fireMeter);
+          const flameStyle = {
+            '--flame-color': TIER_FLAME_COLOR[tier],
+            '--flame-glow': TIER_GLOW[tier],
+          } as CSSProperties;
+          const postStyle = {
+            '--post-color': TIER_POST_COLOR[tier],
+          } as CSSProperties;
 
           return (
-            <div
-              key={beacon.id}
-              title={beacon.name}
-              style={{
-                width: '10px',
-                height: '16px',
-                position: 'relative',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: '2px',
-              }}
-            >
-              {/* Flame */}
-              <div style={{
-                width: '8px',
-                height: '10px',
-                backgroundColor: TIER_FLAME_COLOR[tier],
-                clipPath: 'polygon(50% 0%, 85% 50%, 100% 100%, 0% 100%, 15% 50%)',
-                boxShadow: TIER_GLOW[tier],
-                transition: 'all 0.3s',
-              }} />
-              {/* Post */}
-              <div style={{
-                width: '2px',
-                height: '6px',
-                backgroundColor: TIER_POST_COLOR[tier],
-              }} />
+            <div key={beacon.id} title={beacon.name} className={styles.beaconIcon}>
+              <div className={styles.flame} style={flameStyle} />
+              <div className={styles.post} style={postStyle} />
             </div>
           );
         })}
@@ -100,49 +85,27 @@ export default function BeaconStatus() {
 
       {/* Fire meter bars — shown when any beacon is damaged */}
       {beaconStates.some((b) => b.fireMeter < 100) && (
-        <div style={{ display: 'flex', gap: '5px' }}>
-          {beaconStates.map((beacon) => (
-            <div
-              key={beacon.id}
-              style={{
-                width: '10px',
-                height: '2px',
-                backgroundColor: 'rgba(255,255,255,0.1)',
-                position: 'relative',
-                overflow: 'hidden',
-              }}
-            >
-              <div style={{
-                position: 'absolute',
-                left: 0,
-                top: 0,
-                height: '100%',
-                width: `${beacon.fireMeter}%`,
-                backgroundColor: beacon.fireMeter > 50
-                  ? '#ff8c28'
-                  : beacon.fireMeter > 25
-                  ? '#ffdd4a'
-                  : '#ff4444',
-                transition: 'width 0.3s',
-              }} />
-            </div>
-          ))}
+        <div className={styles.meterRow}>
+          {beaconStates.map((beacon) => {
+            const fillStyle = {
+              '--fill-width': `${beacon.fireMeter}%`,
+              '--fill-color': fireMeterFillColor(beacon.fireMeter),
+            } as CSSProperties;
+
+            return (
+              <div key={beacon.id} className={styles.meterTrack}>
+                <div className={styles.meterFill} style={fillStyle} />
+              </div>
+            );
+          })}
         </div>
       )}
 
       {/* Darkness level label — live (Phase 2) */}
-      <p style={{
-        fontSize: '8px',
-        textTransform: 'uppercase',
-        letterSpacing: '0.15em',
-        color: darknessLevel >= 6
-          ? 'rgba(255,80,80,0.6)'
-          : darknessLevel >= 4
-          ? 'rgba(255,140,40,0.6)'
-          : 'rgba(255,255,255,0.2)',
-        margin: 0,
-        transition: 'color 0.5s',
-      }}>
+      <p
+        className={styles.darknessLabel}
+        style={{ '--darkness-color': darknessLabelColor(darknessLevel) } as CSSProperties}
+      >
         Darkness Level {darknessLevel}
       </p>
     </div>
