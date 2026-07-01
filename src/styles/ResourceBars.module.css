@@ -1,0 +1,56 @@
+/* [File: src/styles/ResourceBars.module.css] */
+/* [BLOCK: Resource Bars HUD Styles] */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background-color: rgba(0, 0, 0, 0.4);
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.bar {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 160px;
+}
+
+.barHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.barLabel {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.barPercent {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.3);
+  font-variant-numeric: tabular-nums;
+}
+
+.track {
+  width: 100%;
+  height: 4px;
+  background-color: rgba(255, 255, 255, 0.08);
+  position: relative;
+  overflow: hidden;
+}
+
+.fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: var(--fill-width, 0%);
+  background-color: var(--fill-color, #ffffff);
+  box-shadow: var(--fill-glow, none);
+  transition: width 0.1s;
+}

@@ -1,0 +1,80 @@
+/* [File: src/styles/BeaconStatus.module.css] */
+/* [BLOCK: Beacon Status HUD Styles] */
+
+.container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: rgba(255, 255, 255, 0.3);
+  margin: 0;
+}
+
+.row {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.beaconIcon {
+  width: 10px;
+  height: 16px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.flame {
+  width: 8px;
+  height: 10px;
+  background-color: var(--flame-color, rgba(255, 255, 255, 0.1));
+  clip-path: polygon(50% 0%, 85% 50%, 100% 100%, 0% 100%, 15% 50%);
+  box-shadow: var(--flame-glow, none);
+  transition: all 0.3s;
+}
+
+.post {
+  width: 2px;
+  height: 6px;
+  background-color: var(--post-color, rgba(255, 255, 255, 0.15));
+}
+
+.meterRow {
+  display: flex;
+  gap: 5px;
+}
+
+.meterTrack {
+  width: 10px;
+  height: 2px;
+  background-color: rgba(255, 255, 255, 0.1);
+  position: relative;
+  overflow: hidden;
+}
+
+.meterFill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: var(--fill-width, 0%);
+  background-color: var(--fill-color, #ff4444);
+  transition: width 0.3s;
+}
+
+.darknessLabel {
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--darkness-color, rgba(255, 255, 255, 0.2));
+  margin: 0;
+  transition: color 0.5s;
+}

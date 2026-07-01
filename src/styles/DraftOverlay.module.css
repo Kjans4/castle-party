@@ -1,0 +1,94 @@
+/* [File: src/styles/DraftOverlay.module.css] */
+/* [BLOCK: Draft Overlay HUD Styles] */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  background-color: rgba(0, 0, 0, 0.55);
+  font-family: sans-serif;
+}
+
+.heading {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.3em;
+  color: rgba(255, 255, 255, 0.5);
+  margin: 0;
+}
+
+.cardRow {
+  display: flex;
+  gap: 14px;
+}
+
+/* [BLOCK: Card] */
+/* --card-color / --card-glow / --card-bg are set per-card in TSX since they
+   depend on rarity (upgrade) or are fixed (spell) — genuine per-instance data. */
+.card {
+  width: 160px;
+  min-height: 210px;
+  padding: 16px 14px;
+  border: 1px solid var(--card-color, #9ca3af);
+  background-color: var(--card-bg, rgba(255, 255, 255, 0.03));
+  box-shadow: var(--card-glow, none);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: pointer;
+  position: relative;
+  transition: transform 0.12s;
+}
+
+.card:hover {
+  transform: translateY(-4px);
+}
+
+.lastChanceBadge {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #ff4444;
+  background-color: #0a0a0f;
+  border: 1px solid #ff4444;
+  padding: 2px 5px;
+}
+
+.tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--card-color, #9ca3af);
+}
+
+.title {
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #ffffff;
+}
+
+.description {
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.5);
+  flex: 1;
+}
+
+.footer {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: rgba(255, 255, 255, 0.25);
+}

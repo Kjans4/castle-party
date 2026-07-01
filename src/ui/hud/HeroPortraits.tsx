@@ -14,10 +14,17 @@
 //   respawn countdown timer, and click/switch is disabled while the hero is
 //   dead. Dead heroes get a dimmed appearance matching Hero.ts's DEAD_ALPHA
 //   visual state. Reads deadHeroIndices + respawnTimerSeconds from the store.
+//
+// Styles extracted to src/styles/HeroPortraits.module.css. State (dead /
+// flashing / active) is expressed via data attributes so CSS handles the
+// branching that used to live in inline style ternaries; per-hero color is
+// passed through as CSS custom properties (--hero-color / --hero-rgb) since
+// that value is genuinely per-instance data, not a static style.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, CSSProperties } from 'react';
 import { useGameStore } from '@/ui/store/gameStore';
 import { HERO_ROSTER, type HeroConfig } from '@/game/config/heroes';
+import styles from '@/styles/HeroPortraits.module.css';
 
 const LEVEL_FLASH_DURATION_MS = 600;
 const DEATH_FLASH_DURATION_MS = 400;
@@ -35,7 +42,6 @@ function hexToRgb(hex: string): string {
   return `${r}, ${g}, ${b}`;
 }
 
-// [BLOCK: Respawn Countdown Format]
 function formatCountdown(seconds: number): string {
   return `${Math.ceil(seconds)}s`;
 }
@@ -74,145 +80,59 @@ function HeroPortraitCard({
   }, [deathFlashId]);
 
   const isFlashing = isLevelFlashing || isDeathFlashing;
-  const color = hero.color;
-  const rgb = hexToRgb(color);
+  const rgb = hexToRgb(hero.color);
 
-  // Dead heroes: dimmed, no click, no active highlight.
   const handleClick = () => {
     if (isDead) return;
     onClick();
   };
 
+  const cardStyle = {
+    '--hero-color': hero.color,
+    '--hero-rgb': rgb,
+  } as CSSProperties;
+
+  const hpFillStyle = {
+    '--hp-width': `${isDead ? 0 : hpPercent}%`,
+    '--hp-color': isDead ? '#ff4444' : hpBarColor(hpPercent),
+  } as CSSProperties;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+    <div className={styles.cardWrapper}>
       <div
         onClick={handleClick}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          padding: '6px 10px 6px 6px',
-          border: `1px solid ${
-            isDead        ? 'rgba(255,68,68,0.3)' :
-            isFlashing    ? 'rgba(255,255,255,0.9)' :
-            isActive      ? color :
-                            'rgba(255,255,255,0.1)'
-          }`,
-          backgroundColor: isDead
-            ? 'rgba(255,0,0,0.05)'
-            : isFlashing
-            ? 'rgba(255,255,255,0.18)'
-            : isActive
-            ? `rgba(${rgb}, 0.12)`
-            : 'rgba(0,0,0,0.5)',
-          boxShadow: isFlashing ? '0 0 16px rgba(255,255,255,0.7)' : 'none',
-          opacity: isDead ? 0.45 : isActive ? 1 : 0.55,
-          cursor: isDead ? 'default' : 'pointer',
-          transition: 'all 0.3s',
-          pointerEvents: 'auto',
-          minWidth: '140px',
-          position: 'relative',
-        }}
+        className={styles.card}
+        style={cardStyle}
+        data-dead={isDead}
+        data-flashing={isFlashing}
+        data-active={isActive}
       >
-        {/* Color swatch */}
-        <div style={{
-          width: '28px',
-          height: '36px',
-          backgroundColor: isDead ? '#333333' : color,
-          opacity: isDead ? 0.5 : isActive ? 1 : 0.5,
-          flexShrink: 0,
-        }} />
+        <div className={styles.swatch} />
 
-        {/* Info */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{
-              fontSize: '11px',
-              fontWeight: 700,
-              textTransform: 'uppercase',
-              letterSpacing: '0.1em',
-              color: isDead ? 'rgba(255,80,80,0.7)' : isActive ? color : 'rgba(255,255,255,0.6)',
-            }}>
-              {hero.name}
-            </span>
-            <span style={{
-              fontSize: '9px',
-              color: 'rgba(255,255,255,0.25)',
-              border: '1px solid rgba(255,255,255,0.15)',
-              padding: '0 4px',
-              lineHeight: '14px',
-            }}>
-              {index + 1}
-            </span>
+        <div className={styles.info}>
+          <div className={styles.nameRow}>
+            <span className={styles.name}>{hero.name}</span>
+            <span className={styles.indexBadge}>{index + 1}</span>
           </div>
 
           {isDead ? (
-            // [BLOCK: Dead State — Phase 6 Chunk 6C]
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1px' }}>
-              <span style={{
-                fontSize: '8px',
-                fontWeight: 700,
-                textTransform: 'uppercase',
-                letterSpacing: '0.15em',
-                color: 'rgba(255,68,68,0.8)',
-              }}>
-                Dead
-              </span>
+            <div className={styles.deadState}>
+              <span className={styles.deadLabel}>Dead</span>
               {respawnTimer > 0 && (
-                <span style={{
-                  fontSize: '10px',
-                  fontVariantNumeric: 'tabular-nums',
-                  color: 'rgba(255,200,200,0.7)',
-                  fontWeight: 600,
-                }}>
-                  {formatCountdown(respawnTimer)}
-                </span>
+                <span className={styles.respawnTimer}>{formatCountdown(respawnTimer)}</span>
               )}
             </div>
           ) : (
-            <span style={{
-              fontSize: '9px',
-              textTransform: 'uppercase',
-              letterSpacing: '0.1em',
-              color: 'rgba(255,255,255,0.3)',
-            }}>
-              {hero.roles[0]}
-            </span>
+            <span className={styles.role}>{hero.roles[0]}</span>
           )}
         </div>
 
-        {/* Active indicator dot — hidden when dead */}
-        {isActive && !isDead && (
-          <div style={{
-            width: '5px',
-            height: '5px',
-            borderRadius: '50%',
-            backgroundColor: color,
-            marginLeft: 'auto',
-            boxShadow: `0 0 6px ${color}`,
-            flexShrink: 0,
-          }} />
-        )}
+        {isActive && !isDead && <div className={styles.activeDot} />}
       </div>
 
       {/* HP Bar — dimmed red when dead */}
-      <div style={{
-        width: '140px',
-        height: '3px',
-        backgroundColor: 'rgba(255,255,255,0.1)',
-        position: 'relative',
-        overflow: 'hidden',
-      }}>
-        <div style={{
-          position: 'absolute',
-          left: 0,
-          top: 0,
-          height: '100%',
-          width: `${isDead ? 0 : hpPercent}%`,
-          backgroundColor: isDead ? '#ff4444' : hpBarColor(hpPercent),
-          opacity: isDead ? 0.3 : 1,
-          transition: 'width 0.15s, background-color 0.3s',
-        }} />
+      <div className={styles.hpTrack}>
+        <div className={styles.hpFill} style={hpFillStyle} data-dead={isDead} />
       </div>
     </div>
   );
@@ -238,7 +158,7 @@ export default function HeroPortraits() {
   }, [levelUpFlashId]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+    <div className={styles.list}>
       {HERO_ROSTER.map((hero, i) => (
         <HeroPortraitCard
           key={hero.id}

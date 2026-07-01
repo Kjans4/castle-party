@@ -7,9 +7,13 @@
 // syncSkillCooldowns()) and activeLeaderIndex/squad to resolve skill names.
 // Greyed out while on cooldown, lit when ready — per
 // castle-party-phase6-plan.md Section 7's "Skill Cooldown HUD" spec.
+// Styles extracted to src/styles/SkillCooldowns.module.css — ready/cooldown
+// variants applied via a data-ready attribute rather than inline branching.
 
+import { CSSProperties } from 'react';
 import { useGameStore } from '@/ui/store/gameStore';
 import { HERO_ROSTER } from '@/game/config/heroes';
+import styles from '@/styles/SkillCooldowns.module.css';
 
 function SkillBox({
   label,
@@ -24,72 +28,20 @@ function SkillBox({
 }) {
   const isReady = remaining <= 0;
   const fillPercent = max > 0 ? Math.max(0, Math.min(100, (1 - remaining / max) * 100)) : 100;
+  const fillStyle = { '--fill-width': `${fillPercent}%` } as CSSProperties;
 
   return (
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      gap: '8px',
-      padding: '6px 10px',
-      border: `1px solid ${isReady ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.08)'}`,
-      backgroundColor: isReady ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.4)',
-      opacity: isReady ? 1 : 0.6,
-      transition: 'opacity 0.2s',
-      minWidth: '130px',
-    }}>
-      <span style={{
-        fontSize: '11px',
-        fontWeight: 700,
-        color: isReady ? '#ffffff' : 'rgba(255,255,255,0.4)',
-        border: '1px solid rgba(255,255,255,0.2)',
-        width: '18px',
-        height: '18px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexShrink: 0,
-      }}>
-        {label}
-      </span>
+    <div className={styles.box} data-ready={isReady}>
+      <span className={styles.key}>{label}</span>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', flex: 1 }}>
-        <span style={{
-          fontSize: '9px',
-          textTransform: 'uppercase',
-          letterSpacing: '0.05em',
-          color: isReady ? 'rgba(255,255,255,0.6)' : 'rgba(255,255,255,0.3)',
-        }}>
-          {name}
-        </span>
-        <div style={{
-          width: '100%',
-          height: '3px',
-          backgroundColor: 'rgba(255,255,255,0.08)',
-          position: 'relative',
-          overflow: 'hidden',
-        }}>
-          <div style={{
-            position: 'absolute',
-            left: 0,
-            top: 0,
-            height: '100%',
-            width: `${fillPercent}%`,
-            backgroundColor: isReady ? '#4a9eff' : 'rgba(74,158,255,0.4)',
-            transition: 'width 0.1s',
-          }} />
+      <div className={styles.info}>
+        <span className={styles.name}>{name}</span>
+        <div className={styles.track}>
+          <div className={styles.fill} style={fillStyle} />
         </div>
       </div>
 
-      {!isReady && (
-        <span style={{
-          fontSize: '9px',
-          fontVariantNumeric: 'tabular-nums',
-          color: 'rgba(255,255,255,0.35)',
-          flexShrink: 0,
-        }}>
-          {remaining.toFixed(1)}s
-        </span>
-      )}
+      {!isReady && <span className={styles.time}>{remaining.toFixed(1)}s</span>}
     </div>
   );
 }
@@ -104,7 +56,7 @@ export default function SkillCooldowns() {
   const [qSkill, eSkill] = leaderConfig.skills;
 
   return (
-    <div style={{ display: 'flex', gap: '6px' }}>
+    <div className={styles.container}>
       <SkillBox label="Q" name={qSkill.name} remaining={cooldowns.qRemaining} max={cooldowns.qMax} />
       <SkillBox label="E" name={eSkill.name} remaining={cooldowns.eRemaining} max={cooldowns.eMax} />
     </div>

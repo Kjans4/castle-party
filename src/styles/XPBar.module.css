@@ -1,0 +1,60 @@
+/* [File: src/styles/XPBar.module.css] */
+/* [BLOCK: XP Bar HUD Styles] */
+
+.container {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background-color: rgba(0, 0, 0, 0.4);
+  padding: 8px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  transition: border-color 0.3s;
+  width: 280px;
+}
+
+.container[data-flashing='true'] {
+  border-color: rgba(255, 255, 255, 0.6);
+}
+
+.level {
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.5);
+  transition: color 0.3s, text-shadow 0.3s;
+  flex-shrink: 0;
+}
+
+.container[data-flashing='true'] .level {
+  color: #ffffff;
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
+}
+
+.track {
+  flex: 1;
+  height: 6px;
+  background-color: rgba(255, 255, 255, 0.08);
+  position: relative;
+  overflow: hidden;
+}
+
+.fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: var(--fill-width, 0%);
+  background-color: #ffaa33;
+  box-shadow: 0 0 6px rgba(255, 170, 51, 0.5);
+  transition: width 0.2s, box-shadow 0.3s;
+}
+
+.container[data-flashing='true'] .fill {
+  box-shadow: 0 0 12px rgba(255, 170, 51, 0.9);
+}
+
+.count {
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.3);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}

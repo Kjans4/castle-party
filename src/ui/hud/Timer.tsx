@@ -4,10 +4,10 @@
 // [BLOCK: Timer HUD]
 // Displays the run countdown in MM:SS format.
 // Reads from Zustand store — updates every render tick.
-// Color reacts to live darkness level (Phase 2): white -> orange (Level 4+)
-// -> red (Level 6+), per castle-party-phase2-plan.md Darkness Level table.
 
+import { CSSProperties } from 'react';
 import { useGameStore, formatTimer } from '@/ui/store/gameStore';
+import styles from '@/styles/Timer.module.css';
 
 function colorForDarknessLevel(level: number): { color: string; glow: string } {
   if (level >= 6) {
@@ -25,34 +25,15 @@ export default function Timer() {
   const display        = formatTimer(runTimer);
   const { color, glow } = colorForDarknessLevel(darknessLevel);
 
+  const valueStyle = {
+    '--timer-color': color,
+    '--timer-glow': glow,
+  } as CSSProperties;
+
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      gap: '2px',
-    }}>
-      <p style={{
-        fontSize: '9px',
-        textTransform: 'uppercase',
-        letterSpacing: '0.2em',
-        color: 'rgba(255,255,255,0.3)',
-        margin: 0,
-      }}>
-        Dawn In
-      </p>
-      <p style={{
-        fontSize: '28px',
-        fontWeight: 900,
-        letterSpacing: '0.1em',
-        fontVariantNumeric: 'tabular-nums',
-        color,
-        textShadow: glow,
-        margin: 0,
-        transition: 'color 0.5s, text-shadow 0.5s',
-      }}>
-        {display}
-      </p>
+    <div className={styles.container}>
+      <p className={styles.label}>Dawn In</p>
+      <p className={styles.value} style={valueStyle}>{display}</p>
     </div>
   );
 }
